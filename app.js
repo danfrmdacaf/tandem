@@ -63,6 +63,7 @@ function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch
 function R(id) {
   var d = S.data[id];
   if (!d) d = S.data[id] = { meta: { name: 'Calendar', v: 0 }, members: {}, events: {}, outbox: [], since: null };
+  if (!d.overlays) d.overlays = { tag: '', list: [] };
   return d;
 }
 function activeRoom() { return S.rooms.filter(function (r) { return r.id === S.active; })[0] || null; }
@@ -82,12 +83,26 @@ function myColour() { var m = memberMap()[(activeRoom() || {}).me]; return m ? m
 function eventsList() {
   var rm = activeRoom(); if (!rm) return [];
   var d = R(rm.id);
-  return Object.keys(d.events).map(function (id) { return { id: id, data: d.events[id].data, deleted: d.events[id].deleted }; });
+  var own = Object.keys(d.events).map(function (id) { return { id: id, data: d.events[id].data, deleted: d.events[id].deleted }; });
+  return own.concat(overlayEvents(d));
 }
+/* events of other calendars that people have chosen to show here. They are read only and carry the colour of
+   the person who shared them. */
+function overlayEvents(d) {
+  var out = [];
+  d.overlays.list.forEach(function (sh) {
+    (sh.items || []).forEach(function (it) {
+      out.push({ id: 'ov:' + sh.share + ':' + it.id, deleted: false, data: Object.assign({}, it.data, { ov: true, ovShare: sh.share, ovLabel: sh.label, ovMode: sh.mode, who: sh.by ? [sh.by] : [] }) });
+    });
+  });
+  return out;
+}
+function overlayList() { var rm = activeRoom(); return rm ? R(rm.id).overlays.list : []; }
 function hiddenSet() { var rm = activeRoom(); return rm ? (S.device.hidden[rm.id] || []) : []; }
 function keepFn() {
   var hid = hiddenSet(), mm = memberMap();
   return function (data) {
+    if (data.ov) return hid.indexOf('ov:' + data.ovShare) < 0 && (data.who || []).every(function (id) { return !mm[id] || hid.indexOf(id) < 0; });
     var who = (data.who || []).filter(function (id) { return mm[id]; });
     if (!who.length) return true;
     return who.some(function (id) { return hid.indexOf(id) < 0; });
@@ -95,6 +110,7 @@ function keepFn() {
 }
 function barAttrs(data) {
   var mm = memberMap(), who = (data.who || []).filter(function (id) { return mm[id]; });
+  if (data.ov) return { cls: 'bar ov', style: who.length ? '--c1:' + mm[who[0]].colour : '' };
   if (who.length === 1) return { cls: 'bar', style: '--c1:' + mm[who[0]].colour };
   if (who.length === 2) return { cls: 'bar two', style: '--c1:' + mm[who[0]].colour + ';--c2:' + mm[who[1]].colour };
   return { cls: 'bar', style: '' };
@@ -143,9 +159,10 @@ function syncRoom(rid) {
   if (navigator.onLine === false) { setStatus('Offline. Changes are kept on this device.'); return Promise.resolve(false); }
   var d = R(rid), push = d.outbox.slice(0, 100);
   syncing = true; setStatus('Syncing');
-  return api('/sync', { key: room.key, body: { since: d.since, push: push } }).then(function (res) {
+  return api('/sync', { key: room.key, body: { since: d.since, push: push, overlayTag: d.overlays.tag } }).then(function (res) {
     d.outbox = d.outbox.filter(function (o) { return !push.some(function (p) { return p.kind === o.kind && p.id === o.id && p.v === o.v; }); });
     var changed = applyItems(rid, res.items);
+    if (res.overlays) { d.overlays = { tag: res.overlayTag || '', list: res.overlays }; changed = true; }
     d.since = new Date(Date.parse(res.now) - 5000).toISOString();
     room.feedToken = res.feedToken; room.invalid = false;
     save(); setStatus('Up to date');
@@ -155,12 +172,12 @@ function syncRoom(rid) {
     return true;
   }).catch(function (e) {
     syncing = false;
-    if (e && e.status === 401) { room.invalid = true; save(); setStatus('This calendar link is no longer valid.'); }
+    if (e && e.status === 401) { room.invalid = true; save(); render(); setStatus('This calendar link is no longer valid.'); }
     else setStatus(d.outbox.length ? 'Waiting to sync' : 'Could not reach the server');
     return false;
   });
 }
-function put(kind, id, data, deleted) {
+function put(kind, id, data, deleted, quiet) {
   var rm = activeRoom(); if (!rm) return;
   var d = R(rm.id), v = nextV();
   if (kind === 'event') d.events[id] = { data: data, v: v, deleted: !!deleted };
@@ -168,6 +185,7 @@ function put(kind, id, data, deleted) {
   else d.meta = Object.assign({}, data, { v: v });
   d.outbox = d.outbox.filter(function (o) { return !(o.kind === kind && o.id === id); });
   d.outbox.push({ kind: kind, id: id, data: data, v: v, deleted: !!deleted });
+  if (quiet) return;
   save(); setStatus('Saving'); scheduleSync(400);
 }
 
@@ -196,10 +214,10 @@ function widgetBody(w) {
     var up = C.upcoming(filtered, td, now, LIMITS.next[w.size]);
     body = '<h4>Next up</h4><div class="wl">' + (up.length ? up.map(function (o) { return eventRow(o, td, { day: true }); }).join('') : '<div class="sub">Nothing coming up.</div>') + '</div>';
   } else if (w.type === 'countdown') {
-    var target = null;
-    if (w.pin) { var pe = filtered.filter(function (e) { return e.id === w.pin; })[0]; if (pe) { var st = C.occurrenceStarts(pe.data, td, C.add(td, 800)); if (st.length) target = { date: st[0], title: pe.data.title }; } }
+    var target = null, own = filtered.filter(function (e) { return !e.data.ov; });
+    if (w.pin) { var pe = own.filter(function (e) { return e.id === w.pin; })[0]; if (pe) { var st = C.occurrenceStarts(pe.data, td, C.add(td, 800)); if (st.length) target = { date: st[0], title: pe.data.title }; } }
     if (!target) {
-      var cands = C.upcoming(filtered, C.add(td, 1), '00:00', 40), pick = cands.filter(function (o) { return o.data.allDay; })[0] || cands[0];
+      var cands = C.upcoming(own, C.add(td, 1), '00:00', 40), pick = cands.filter(function (o) { return o.data.allDay; })[0] || cands[0];
       if (pick) target = { date: pick.date, title: pick.data.title };
     }
     if (target) {
@@ -248,7 +266,7 @@ function widgetHtml(w, idx, total, edit) {
       '<button type="button" data-act="w-right" data-i="' + idx + '"' + (idx === total - 1 ? ' disabled' : '') + ' aria-label="Move later">Later</button>' +
       '<select data-w="' + idx + ':size" aria-label="Size">' + SIZES.map(function (s) { return '<option value="' + s[0] + '"' + (w.size === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
       '<select data-w="' + idx + ':style" aria-label="Design">' + STYLES.map(function (s) { return '<option value="' + s[0] + '"' + (w.style === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
-      (w.type === 'countdown' ? '<select data-w="' + idx + ':pin" aria-label="Event">' + '<option value="">Next event</option>' + eventsList().filter(function (e) { return !e.deleted && e.data; }).slice(0, 80).map(function (e) { return '<option value="' + esc(e.id) + '"' + (w.pin === e.id ? ' selected' : '') + '>' + esc(e.data.title) + '</option>'; }).join('') + '</select>' : '') +
+      (w.type === 'countdown' ? '<select data-w="' + idx + ':pin" aria-label="Event">' + '<option value="">Next event</option>' + eventsList().filter(function (e) { return !e.deleted && e.data && !e.data.ov; }).slice(0, 80).map(function (e) { return '<option value="' + esc(e.id) + '"' + (w.pin === e.id ? ' selected' : '') + '>' + esc(e.data.title) + '</option>'; }).join('') + '</select>' : '') +
       '<button type="button" data-act="w-remove" data-i="' + idx + '">Remove</button></div>';
   }
   return '<article class="w ' + w.size + ' st-' + w.style + '" style="--c:' + col + ';--wi:' + ink + '">' + widgetBody(w) + bar + '</article>';
@@ -256,15 +274,18 @@ function widgetHtml(w, idx, total, edit) {
 
 /* ---------- views ---------- */
 function peopleBar() {
-  var ms = members(), hid = hiddenSet();
-  if (ms.length < 2) return '';
-  return '<div class="people" role="group" aria-label="Show or hide people">' + ms.map(function (m) {
+  var ms = members(), hid = hiddenSet(), ovs = overlayList(), mm = memberMap();
+  if (ms.length < 2 && !ovs.length) return '';
+  return '<div class="people" role="group" aria-label="Show or hide people and shared calendars">' + ms.map(function (m) {
     return '<button type="button" class="person" data-act="toggle-person" data-id="' + esc(m.id) + '" aria-pressed="' + (hid.indexOf(m.id) < 0) + '"><span class="dot" style="--c:' + m.colour + '"></span>' + esc(m.name) + '</button>';
+  }).join('') + ovs.map(function (sh) {
+    var col = mm[sh.by] ? mm[sh.by].colour : '';
+    return '<button type="button" class="person ovp" data-act="toggle-person" data-id="ov:' + esc(sh.share) + '" aria-pressed="' + (hid.indexOf('ov:' + sh.share) < 0) + '"><span class="dot ov"' + (col ? ' style="--c:' + col + '"' : '') + '></span>' + esc(sh.label) + '</button>';
   }).join('') + '</div>';
 }
 function occItem(o) {
   var b = barAttrs(o.data), t = C.timeLabel(o);
-  return '<button type="button" class="item" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="in"><div class="tt">' + esc(o.data.title) + '</div><div class="sub">' + esc([t, o.data.place, whoText(o.data)].filter(Boolean).join('  ·  ')) + '</div></span></button>';
+  return '<button type="button" class="item' + (o.data.ov ? ' ov' : '') + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="in"><div class="tt">' + esc(o.data.title) + '</div><div class="sub">' + esc([t, o.data.place, o.data.ov ? o.data.ovLabel : whoText(o.data)].filter(Boolean).join('  ·  ')) + '</div></span></button>';
 }
 function viewHome() {
   var td = today(), list = S.device.widgets;
@@ -281,9 +302,9 @@ function viewMonth() {
   for (var d = start; d <= end; d = C.add(d, 1)) {
     var occ = map[d] || [], w = C.dow(d);
     h += '<button type="button" class="cell' + (d.slice(0, 7) !== first.slice(0, 7) ? ' out' : '') + (w === 0 || w === 6 ? ' wkend' : '') + (d === td ? ' today' : '') + '" data-act="day" data-date="' + d + '" aria-label="' + esc(niceDate(d)) + '"><span class="dn">' + (+d.slice(8)) + '</span><div class="chips">' +
-      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
+      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip' + (o.data.ov ? ' ov' : '') + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
       (occ.length > 3 ? '<div class="more">and ' + (occ.length - 3) + ' more</div>' : '') + '</div><div class="dots">' +
-      occ.slice(0, 6).map(function (o) { var c = dotFor(o.data); return '<span class="dot"' + (c ? ' style="--c:' + c + '"' : '') + '></span>'; }).join('') + '</div></button>';
+      occ.slice(0, 6).map(function (o) { var c = dotFor(o.data); return '<span class="dot' + (o.data.ov ? ' ov' : '') + '"' + (c ? ' style="--c:' + c + '"' : '') + '></span>'; }).join('') + '</div></button>';
   }
   return h + '</div>';
 }
@@ -351,7 +372,7 @@ function render() {
   }
   h += '<div class="spacer"></div><button type="button" class="btn primary addbtn" data-act="add">Add event</button></div>';
   h += peopleBar();
-  if (rm.invalid) h += '<div class="empty">This calendar link is no longer valid. Ask for a new invitation, or remove it in Settings.</div>';
+  if (rm.invalid) h += '<div class="empty">This calendar link is no longer valid. It may have been replaced. Ask for the new invitation link and open it on this device, or remove the calendar in Settings.</div>';
   h += v === 'home' ? viewHome() : v === 'month' ? viewMonth() : v === 'week' ? viewWeek() : viewAgenda();
   h += '<button type="button" class="fab" data-act="add">' + ICON.plus + 'Add event</button>';
   var y = window.scrollY;
@@ -403,12 +424,14 @@ function shareUrl() { var rm = activeRoom(); return location.href.split('#')[0].
 function feedUrl() { var rm = activeRoom(); return rm && rm.feedToken ? API + '/feed/' + rm.id + '/' + rm.feedToken + '.ics' : ''; }
 function openSettings() {
   var rm = activeRoom(); if (!rm) return;
-  var d = R(rm.id), ms = members(), feed = feedUrl(), url = shareUrl();
+  var d = R(rm.id), ms = members(), feed = feedUrl(), url = shareUrl(), flash = ui.flash || ''; ui.flash = '';
+  var ovs = overlayList();
   var people = ms.map(function (m) {
     return '<div class="stack" style="gap:8px"><label class="f">Name' + (m.id === rm.me ? ' (you)' : '') + '<input type="text" data-person="' + esc(m.id) + '" maxlength="40" value="' + esc(m.name) + '"></label>' +
       '<div class="swatches" role="group" aria-label="Colour for ' + esc(m.name) + '">' + C.PALETTE.map(function (c) { return '<button type="button" data-act="person-colour" data-id="' + esc(m.id) + '" data-colour="' + c + '" style="--c:' + c + '" aria-pressed="' + (c === m.colour) + '" aria-label="Colour ' + c + '"></button>'; }).join('') + '</div></div>';
   }).join('');
   openDialog('<div class="actions"><h2>Settings</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
+    (flash ? '<div class="notice" role="status">' + esc(flash) + '</div>' : '') +
     '<div class="sect"><h3>Calendar</h3><label class="f">Calendar name<input type="text" id="st-name" maxlength="60" value="' + esc(d.meta.name || '') + '"></label></div>' +
     '<div class="sect"><h3>People</h3>' + people + '</div>' +
     '<div class="sect"><h3>Invite someone or open this calendar on another device</h3>' +
@@ -418,9 +441,20 @@ function openSettings() {
     '<a class="btn" href="mailto:?subject=' + encodeURIComponent('Join our calendar on Tandem') + '&body=' + encodeURIComponent('Open this link to join the calendar "' + (d.meta.name || 'Calendar') + '" on Tandem:\n\n' + url) + '">Email the link</a></div>' +
     '<p class="note">To open the calendar on another of your own devices, email the link to yourself and open it there. Alternatively, show a short code and type it on the other device. The code works once and expires after ten minutes.</p>' +
     '<div class="actions"><button type="button" class="btn" data-act="make-code">Show a short code</button></div><div id="st-code"></div></div>' +
+    '<div class="sect"><h3>Show this calendar on another calendar</h3>' +
+    '<p class="note">Choose another calendar on this device and the events of this one will appear there, so the people in it can see when you are busy. They can see them but cannot change them, and nothing they add there ever comes back into this calendar. Choose Show as busy only to share the times without the titles, places or notes: those are never sent. You can stop at any time.</p>' +
+    '<div id="st-shares" class="stack" style="gap:8px"><p class="note">Loading</p></div><div class="note" id="st-share-msg" role="status"></div></div>' +
+    (ovs.length ? '<div class="sect"><h3>Other calendars shown here</h3>' + ovs.map(function (sh) { return '<div class="note"><strong>' + esc(sh.label) + '</strong>: ' + (sh.mode === 'busy' ? 'busy times only' : 'titles and places') + '</div>'; }).join('') +
+      '<p class="note">These are read only. Use the filter above the calendar to hide one on this device. The person who shared it can stop sharing in their own settings.</p></div>' : '') +
+    '<div class="sect"><h3>Bring in events from a calendar file</h3>' +
+    '<p class="note">Export a calendar as a file ending in .ics, for example from a university timetable, Google Calendar or the Calendar application on a Mac, then choose it here. You will see what it contains before anything is added. The events are added to this calendar for you. Choosing the same file again updates those events instead of duplicating them.</p>' +
+    '<input type="file" id="ics-file" accept=".ics,text/calendar" aria-label="Choose a calendar file"><div id="st-import" class="stack" style="gap:8px"></div></div>' +
     '<div class="sect"><h3>Use the calendar in your own calendar application</h3>' +
     '<p class="note">A website cannot place a widget on the home screen of an iPhone, an iPad or an Android phone. The reliable alternative is to subscribe to this calendar in the Calendar application on your device. Its own widgets will then show the events from Tandem, and it keeps updating by itself. The subscription is read only.</p>' +
     (feed ? '<div class="linkbox">' + esc(feed.replace('https://', 'webcal://')) + '</div><div class="actions"><button type="button" class="btn" data-act="copy-feed">Copy the subscription address</button><a class="btn" href="' + esc(feed.replace('https://', 'webcal://')) + '">Subscribe</a></div>' : '<p class="note">The subscription address appears after the first successful sync.</p>') + '</div>' +
+    '<div class="sect"><h3>Security</h3>' +
+    '<p class="note">Anyone who has the invitation link can see and change this calendar, so treat it like a password. If the link has reached someone it should not have, replace it. The old link, any old short code and the old subscription address then stop working at once. Everyone you still want in the calendar will need the new link.</p>' +
+    '<div id="st-rotate"><button type="button" class="btn" data-act="rotate-ask">Replace the invitation link</button></div></div>' +
     '<div class="sect"><h3>Add Tandem to your home screen</h3>' + (ui.deferredInstall ? '<button type="button" class="btn primary" data-act="install">Install Tandem</button>' : '') +
     '<p class="note">On an iPhone or iPad, open Tandem in Safari, tap the Share button, then choose Add to Home Screen. ' +
     'On Android, open the browser menu and choose Install application. On a Mac, use Safari, then File, then Add to Dock, or use the install icon in the address bar of Chrome or Edge.</p>' +
@@ -429,6 +463,73 @@ function openSettings() {
     '<div class="actions"><button type="button" class="btn" data-act="new-or-join">Create or join another</button><button type="button" class="btn danger" data-act="leave">Remove this calendar from this device</button></div>' +
     '<p class="note">Removing a calendar only affects this device. The calendar stays available to everyone else who has the link.</p></div>' +
     '<p class="foot">Tandem is built by Daniel Chidi, Founder, Adachi Industries.</p>');
+  loadShares();
+}
+
+/* ---------- showing this calendar on another ---------- */
+function shareControls(rm, list) {
+  var others = S.rooms.filter(function (r) { return r.id !== rm.id && !r.invalid; });
+  if (!others.length) return '<p class="note">To show this calendar on another one, first create or join a second calendar on this device. It will then appear here.</p>';
+  var byTarget = {}; (list || []).forEach(function (x) { byTarget[x.target_room] = x; });
+  return others.map(function (r) {
+    var cur = byTarget[r.id] ? byTarget[r.id].mode : 'off', nm = R(r.id).meta.name || 'Calendar';
+    return '<div class="shrow"><span class="grow">' + esc(nm) + '</span><select data-share="' + esc(r.id) + '" aria-label="Show this calendar on ' + esc(nm) + '">' +
+      [['off', 'Not shown'], ['details', 'Show details'], ['busy', 'Show as busy only']].map(function (o) { return '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>';
+  }).join('');
+}
+function loadShares() {
+  var rm = activeRoom(); if (!rm || !$('#st-shares')) return;
+  api('/share/list', { key: rm.key }).then(function (r) { var b = $('#st-shares'); if (b && activeRoom() === rm) b.innerHTML = shareControls(rm, r.shares); })
+    .catch(function () { var b = $('#st-shares'); if (b) b.innerHTML = '<p class="note">This could not be loaded. Please try again when you are online.</p>'; });
+}
+function shareLabel(rm) { var m = memberMap()[rm.me]; return (m ? m.name + "'s calendar" : (R(rm.id).meta.name || 'Shared calendar')).slice(0, 60); }
+function setShare(rm, el) {
+  var tr = S.rooms.filter(function (r) { return r.id === el.dataset.share; })[0]; if (!tr) return;
+  var mode = el.value, msg = $('#st-share-msg'); el.disabled = true; if (msg) msg.textContent = '';
+  var p = mode === 'off' ? api('/share/delete', { key: rm.key, body: { targetRoom: tr.id } })
+    : api('/share/create', { key: rm.key, body: { targetKey: tr.key, mode: mode, by: tr.me, label: shareLabel(rm) } });
+  p.then(function () { el.disabled = false; if (msg) msg.textContent = mode === 'off' ? 'This calendar is no longer shown there.' : 'Saved. It will appear there within a few seconds.'; })
+    .catch(function (e) { el.disabled = false; if (msg) msg.textContent = e.message || 'That did not work. Please try again.'; loadShares(); });
+}
+
+/* ---------- bringing in a calendar file ---------- */
+function readImport(file) {
+  var box = $('#st-import'), rm = activeRoom(); if (!box || !file || !rm) return;
+  ui.imp = null;
+  if (file.size > 3000000) { box.innerHTML = '<div class="err">That file is too large to read.</div>'; return; }
+  var rd = new FileReader();
+  rd.onload = function () {
+    var r = C.parseICS(String(rd.result || '')), b = $('#st-import'); if (!b) return;
+    if (!r.events.length) { b.innerHTML = '<div class="err">No events could be read from that file.</div>'; return; }
+    ui.imp = r;
+    var notes = [];
+    if (r.skipped) notes.push(r.skipped + (r.skipped === 1 ? ' entry was' : ' entries were') + ' left out because it was cancelled, moved to another time or had no title.');
+    if (r.simplified) notes.push(r.simplified + (r.simplified === 1 ? ' event uses' : ' events use') + ' a repeat rule that Tandem cannot follow exactly, so ' + (r.simplified === 1 ? 'it' : 'they') + ' may differ from the original.');
+    if (r.truncated) notes.push('Only the first 1000 events were read.');
+    b.innerHTML = '<p><strong>' + r.events.length + (r.events.length === 1 ? ' event' : ' events') + '</strong> can be added to ' + esc(R(rm.id).meta.name || 'this calendar') + ', for you.</p>' +
+      '<div class="stack" style="gap:4px">' + r.events.slice(0, 6).map(function (ev) { return '<div class="note">' + esc(ev.data.title) + ', ' + esc(niceDate(ev.data.date)) + (ev.data.start ? ' at ' + esc(ev.data.start) : '') + (ev.data.repeat ? ', repeating' : '') + '</div>'; }).join('') +
+      (r.events.length > 6 ? '<div class="note">and ' + (r.events.length - 6) + ' more</div>' : '') + '</div>' +
+      notes.map(function (n) { return '<p class="note">' + esc(n) + '</p>'; }).join('') +
+      '<div class="actions"><button type="button" class="btn primary" data-act="import-do">Add these events</button><button type="button" class="btn" data-act="import-cancel">Cancel</button></div>';
+  };
+  rd.onerror = function () { box.innerHTML = '<div class="err">That file could not be read.</div>'; };
+  rd.readAsText(file);
+}
+function doImport() {
+  var rm = activeRoom(), r = ui.imp; if (!rm || !r) return;
+  r.events.forEach(function (ev) { put('event', ev.id, Object.assign({}, ev.data, { who: [rm.me], by: rm.me }), false, true); });
+  save(); setStatus('Saving'); scheduleSync(100);
+  ui.imp = null; ui.flash = 'Added ' + r.events.length + (r.events.length === 1 ? ' event' : ' events') + ' to this calendar.';
+  render(); openSettings();
+}
+
+/* a read only look at an event that belongs to another calendar */
+function openOverlayEvent(id, date) {
+  var ev = eventsList().filter(function (e) { return e.id === id; })[0]; if (!ev) return;
+  var d = ev.data, occ = (C.byDate([ev], date, date)[date] || [])[0], t = occ ? C.timeLabel(occ) : '';
+  openDialog('<div class="actions"><h2>' + esc(d.title) + '</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
+    '<div class="stack"><div>' + esc(niceDate(date || d.date)) + (t ? ', ' + esc(t) : '') + '</div>' + (d.place ? '<div class="note">' + esc(d.place) + '</div>' : '') +
+    '<div class="note">Shown from ' + esc(d.ovLabel) + '. ' + (d.ovMode === 'busy' ? 'Only the times are shared, so the title and details stay private. ' : '') + 'It is read only here. It can only be changed in the calendar it comes from.</div></div>');
 }
 function openRooms() {
   openDialog('<div class="actions"><h2>Your calendars</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
@@ -475,7 +576,13 @@ function parseKey(text) {
 }
 function joinWithKey(key) {
   var rid = key.split('.')[0], existing = S.rooms.filter(function (r) { return r.id === rid; })[0];
-  if (existing) { S.active = rid; save(); afterJoin(); return Promise.resolve(); }
+  if (existing) {
+    /* a link for a calendar already on this device: confirm it, and keep it if the link was replaced */
+    return api('/sync', { key: key, body: { since: null, push: [] } }).then(function (res) {
+      existing.key = key; existing.invalid = false; if (res.feedToken) existing.feedToken = res.feedToken;
+      S.active = rid; save(); afterJoin();
+    });
+  }
   return api('/sync', { key: key, body: { since: null, push: [] } }).then(function (res) {
     var tmp = { members: {}, name: 'Calendar' };
     res.items.forEach(function (it) {
@@ -498,6 +605,7 @@ function finishJoin(meId, isNew, name, colour) {
   S.active = pj.rid;
   R(pj.rid).meta = { name: pj.tmp.name, v: 1 };
   applyItems(pj.rid, pj.res.items);
+  if (pj.res.overlays) R(pj.rid).overlays = { tag: pj.res.overlayTag || '', list: pj.res.overlays };
   R(pj.rid).since = new Date(Date.parse(pj.res.now) - 5000).toISOString();
   if (isNew) { room.me = uid(); put('member', room.me, { name: name, colour: colour }); }
   pendingJoin = null;
@@ -522,7 +630,22 @@ document.addEventListener('click', function (e) {
   else if (a === 'today') { ui.date = today(); render(); }
   else if (a === 'day') openDay(t.dataset.date);
   else if (a === 'add') { closeDialog(); openEvent(null, t.dataset.date || (S.device.view === 'month' || S.device.view === 'week' ? null : today())); }
-  else if (a === 'event') { closeDialog(); openEvent(t.dataset.id, t.dataset.date); }
+  else if (a === 'event') { closeDialog(); if (String(t.dataset.id).indexOf('ov:') === 0) openOverlayEvent(t.dataset.id, t.dataset.date); else openEvent(t.dataset.id, t.dataset.date); }
+  else if (a === 'rotate-ask') {
+    var rb = $('#st-rotate');
+    if (rb) rb.innerHTML = '<div class="stack" style="gap:8px"><p class="note"><strong>Replace the link now?</strong> Every other device, including your own other devices, will lose access until it is given the new link. This cannot be undone.</p><div class="actions"><button type="button" class="btn danger" data-act="rotate-do">Replace the link</button><button type="button" class="btn" data-act="rotate-cancel">Keep the current link</button></div><div class="err" id="st-rotate-err"></div></div>';
+  }
+  else if (a === 'rotate-cancel') { var rc = $('#st-rotate'); if (rc) rc.innerHTML = '<button type="button" class="btn" data-act="rotate-ask">Replace the invitation link</button>'; }
+  else if (a === 'rotate-do') {
+    t.disabled = true;
+    api('/room/rotate', { key: rm.key }).then(function (r) {
+      rm.key = r.key; rm.feedToken = r.feedToken; rm.invalid = false; save();
+      ui.flash = 'The invitation link has been replaced. The old link, short codes and subscription address no longer work. Copy the new link below and send it to the people who should keep access.';
+      openSettings();
+    }).catch(function (err) { t.disabled = false; var el = $('#st-rotate-err'); if (el) el.textContent = err.message || 'The link could not be replaced.'; });
+  }
+  else if (a === 'import-do') doImport();
+  else if (a === 'import-cancel') { ui.imp = null; var ib = $('#st-import'); if (ib) ib.innerHTML = ''; var fi = $('#ics-file'); if (fi) fi.value = ''; }
   else if (a === 'toggle-who') t.setAttribute('aria-pressed', t.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
   else if (a === 'toggle-person') {
     var hid = (S.device.hidden[rm.id] || []).slice(), i = hid.indexOf(t.dataset.id);
@@ -571,6 +694,8 @@ document.addEventListener('change', function (e) {
   var el = e.target, rm = activeRoom();
   if (el.id === 'ev-allday') { $('#ev-times').hidden = el.checked; }
   else if (el.id === 'ev-repeat') { $('#ev-untilrow').hidden = el.value === 'none'; }
+  else if (el.id === 'ics-file') { readImport(el.files && el.files[0]); }
+  else if (el.dataset.share && rm) { setShare(rm, el); }
   else if (el.id === 'st-name' && rm) { put('meta', 'room', { name: el.value.trim().slice(0, 60) || 'Calendar' }); render(); }
   else if (el.dataset.person && rm) { var m = R(rm.id).members[el.dataset.person]; if (m) { put('member', el.dataset.person, { name: el.value.trim().slice(0, 40) || m.name, colour: m.colour }); render(); } }
   else if (el.dataset.w) {

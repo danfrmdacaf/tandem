@@ -160,7 +160,140 @@
     return { data: d };
   }
 
+  /* ---------- reading calendar files (iCalendar) ----------
+     Returns { events: [{ id, data }], skipped, simplified, truncated }. The ids are stable, built from the
+     identifier and start of each event, so importing the same file again updates the events instead of
+     duplicating them. Times written in UTC are converted to the time zone of the device. Times that carry
+     a named time zone or none are read as local time. */
+  function unesc(s) { return String(s || '').replace(/\\([nN,;\\])/g, function (m, c) { return c === 'n' || c === 'N' ? '\n' : c; }); }
+  function hash64(s) {
+    var a = 0x811c9dc5, b = 0x9e3779b9;
+    for (var i = 0; i < s.length; i++) {
+      a = Math.imul(a ^ s.charCodeAt(i), 16777619);
+      b = Math.imul(b ^ s.charCodeAt(i), 2246822519); b ^= b >>> 13;
+    }
+    return (a >>> 0).toString(36) + (b >>> 0).toString(36);
+  }
+  function parseStamp(v) {
+    var m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/.exec(String(v || '').trim());
+    if (!m) return null;
+    if (m[4] === undefined) return { date: m[1] + '-' + m[2] + '-' + m[3], time: null };
+    if (m[7]) {
+      var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)));
+      return { date: d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()), time: pad(d.getHours()) + ':' + pad(d.getMinutes()) };
+    }
+    return { date: m[1] + '-' + m[2] + '-' + m[3], time: m[4] + ':' + m[5] };
+  }
+  function durationMinutes(v) {
+    var m = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(v || '').trim());
+    if (!m) return null;
+    return (+m[1] || 0) * 10080 + (+m[2] || 0) * 1440 + (+m[3] || 0) * 60 + (+m[4] || 0);
+  }
+  var ICS_DAYS = { MO: 0, TU: 1, WE: 2, TH: 3, FR: 4, SA: 5, SU: 6 };
+
+  function parseICS(text, opts) {
+    var max = (opts && opts.max) || 1000;
+    var lines = String(text || '').replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+    var out = [], skipped = 0, simplified = 0, truncated = false, inEv = false, inAlarm = false, props = null;
+
+    function handle(list) {
+      var p = {};
+      list.forEach(function (x) { if (!(x.name in p)) p[x.name] = x; });
+      if (!p.DTSTART || !p.SUMMARY || p['RECURRENCE-ID'] || (p.STATUS && /cancel/i.test(p.STATUS.value))) { skipped++; return; }
+      var title = unesc(p.SUMMARY.value).trim();
+      var st = parseStamp(p.DTSTART.value);
+      if (!title || !st) { skipped++; return; }
+      var raw = { title: title, date: st.date, allDay: st.time === null };
+      var en = p.DTEND ? parseStamp(p.DTEND.value) : null;
+      var mins = p.DURATION ? durationMinutes(p.DURATION.value) : null;
+      if (raw.allDay) {
+        if (en && en.date > st.date) raw.endDate = add(en.date, -1);
+        else if (mins && mins >= 2880) raw.endDate = add(st.date, Math.ceil(mins / 1440) - 1);
+      } else {
+        raw.start = st.time;
+        if (en && en.time !== null) {
+          if (en.date > st.date) {
+            if (en.date === add(st.date, 1) && en.time === '00:00') raw.end = '23:59';
+            else { raw.endDate = en.date; raw.end = en.time; }
+          } else raw.end = en.time < st.time ? st.time : en.time;
+        } else if (mins !== null) {
+          var t = Date.UTC(+st.date.slice(0, 4), +st.date.slice(5, 7) - 1, +st.date.slice(8), +st.time.slice(0, 2), +st.time.slice(3), 0) + mins * 60000;
+          var e = new Date(t), ed = e.getUTCFullYear() + '-' + pad(e.getUTCMonth() + 1) + '-' + pad(e.getUTCDate()), et = pad(e.getUTCHours()) + ':' + pad(e.getUTCMinutes());
+          if (ed > st.date) { if (ed === add(st.date, 1) && et === '00:00') raw.end = '23:59'; else { raw.endDate = ed; raw.end = et; } } else raw.end = et;
+        } else raw.end = st.time;
+      }
+      if (p.LOCATION) raw.place = unesc(p.LOCATION.value);
+      if (p.DESCRIPTION) raw.notes = unesc(p.DESCRIPTION.value);
+      var base = cleanEvent(raw);
+      if (base.error) { skipped++; return; }
+      base = base.data;
+      var span = spanOf(base);
+
+      /* the repeat rule, as far as Tandem can express it */
+      var rule = {};
+      if (p.RRULE) p.RRULE.value.split(';').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) rule[kv.slice(0, i).toUpperCase()] = kv.slice(i + 1); });
+      var interval = +rule.INTERVAL || 1, repeat = null, variants = [{ suffix: '', date: base.date }], ok = true, f = rule.FREQ;
+      if (f) {
+        var days = rule.BYDAY ? rule.BYDAY.toUpperCase().split(',') : null;
+        var plain = !rule.BYMONTHDAY && !rule.BYSETPOS && !rule.BYYEARDAY && !rule.BYWEEKNO;
+        if (!plain) ok = false;
+        else if (f === 'DAILY' && interval === 1 && !days && !rule.BYMONTH) repeat = 'daily';
+        else if (f === 'WEEKLY' && (interval === 1 || interval === 2) && !rule.BYMONTH) {
+          repeat = interval === 1 ? 'weekly' : 'fortnightly';
+          if (days) {
+            var uniq = days.filter(function (x, i) { return days.indexOf(x) === i; });
+            if (!uniq.every(function (x) { return x in ICS_DAYS; })) ok = false;
+            else if (!(uniq.length === 1 && ICS_DAYS[uniq[0]] === (dow(base.date) + 6) % 7)) {
+              var startIdx = (dow(base.date) + 6) % 7;
+              variants = uniq.map(function (x) {
+                var off = ICS_DAYS[x] - startIdx;
+                return { suffix: x, date: add(base.date, off >= 0 ? off : off + 7 * interval) };
+              }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+            }
+          }
+        }
+        else if (f === 'MONTHLY' && interval === 1 && !days && !rule.BYMONTH) repeat = 'monthly';
+        else if (f === 'YEARLY' && interval === 1 && !days && !rule.BYMONTH) repeat = 'yearly';
+        else ok = false;
+        if (!ok) { repeat = null; variants = [{ suffix: '', date: base.date }]; simplified++; }
+      }
+      var until = null;
+      if (repeat && rule.UNTIL) { var us = parseStamp(rule.UNTIL); if (us) until = us.date; }
+      if (repeat && rule.COUNT && !until) {
+        var n = Math.min(+rule.COUNT || 0, 1000), all = [];
+        variants.forEach(function (v) { occurrenceStarts({ date: v.date, repeat: repeat }, v.date, add(v.date, 3700)).forEach(function (d) { all.push(d); }); });
+        all.sort();
+        if (n > 0 && all.length) until = all[Math.min(n, all.length) - 1];
+      }
+      if (p.EXDATE) simplified++;
+
+      variants.forEach(function (v) {
+        if (until && v.date > until) return;
+        if (out.length >= max) { truncated = true; return; }
+        var data = Object.assign({}, base, { date: v.date });
+        delete data.endDate;
+        if (span > 0) data.endDate = add(v.date, span);
+        if (repeat) { data.repeat = repeat; if (until) data.until = until; }
+        out.push({ id: 'i' + hash64([p.UID ? p.UID.value : title, p.DTSTART.value, v.suffix].join('|')), data: data });
+      });
+    }
+
+    for (var li = 0; li < lines.length; li++) {
+      var ln = lines[li];
+      if (ln === 'BEGIN:VEVENT') { inEv = true; inAlarm = false; props = []; continue; }
+      if (ln === 'END:VEVENT') { if (props) handle(props); inEv = false; props = null; continue; }
+      if (!inEv) continue;
+      if (ln === 'BEGIN:VALARM') { inAlarm = true; continue; }
+      if (ln === 'END:VALARM') { inAlarm = false; continue; }
+      if (inAlarm || !ln) continue;
+      var c = ln.indexOf(':'); if (c < 1) continue;
+      props.push({ name: ln.slice(0, c).split(';')[0].toUpperCase(), value: ln.slice(c + 1) });
+    }
+    return { events: out, skipped: skipped, simplified: simplified, truncated: truncated };
+  }
+
   return {
+    parseICS: parseICS,
     pad: pad, isDate: isDate, parse: parse, fmt: fmt, add: add, diff: diff, dow: dow, monday: monday, monthStart: monthStart,
     addMonths: addMonths, daysInMonth: daysInMonth, PALETTE: PALETTE, REPEATS: REPEATS, occurrenceStarts: occurrenceStarts,
     byDate: byDate, timeLabel: timeLabel, upcoming: upcoming, freeTogether: freeTogether, inkOn: inkOn, cleanEvent: cleanEvent,
