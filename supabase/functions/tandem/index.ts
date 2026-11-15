@@ -10,7 +10,7 @@ const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SE
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "content-type, x-tandem-key",
+  "Access-Control-Allow-Headers": "content-type, x-tandem-key, authorization",
   "Access-Control-Max-Age": "86400",
 };
 const ALPHA_ID = "abcdefghjkmnpqrstuvwxyz23456789";
@@ -39,9 +39,9 @@ async function sha256(s: string): Promise<string> {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function readJson(req: Request): Promise<Record<string, any>> {
+async function readJson(req: Request, max = 300000): Promise<Record<string, any>> {
   const t = await req.text();
-  if (t.length > 300000) throw new Error("Request too large");
+  if (t.length > max) throw new Error("Request too large");
   return t ? JSON.parse(t) : {};
 }
 
@@ -189,6 +189,166 @@ function buildFeed(name: string, members: Record<string, string>, events: { id: 
   return L.map(fold).join("\r\n") + "\r\n";
 }
 
+
+// ---- accounts ----
+// An account is optional. It stores a person's calendars (their keys), Home page layout and preferences so that
+// they follow the person to every device. Passwords are stored only as a salted PBKDF2 hash. Session and reset
+// tokens are random and only their hashes are stored.
+const SITE = Deno.env.get("TANDEM_SITE") || "https://danfrmdacaf.github.io/tandem/";
+const RESEND_KEY = Deno.env.get("RESEND_API_KEY") || "";
+const MAIL_FROM = Deno.env.get("MAIL_FROM") || "Tandem <onboarding@resend.dev>";
+const PW_ITER = 600000;
+const SESSION_DAYS = 90;
+const MAX_FILES = 30;
+const MAX_FILE_B64 = 2200000;
+const COMMON_PASSWORDS = ["password", "password1", "password123", "12345678", "123456789", "1234567890", "qwerty123", "qwertyuiop", "iloveyou1", "letmein123", "adminadmin", "11111111"];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const ipOf = (req: Request) => (req.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim().slice(0, 64);
+
+async function derive(pw: string, saltB64: string, iter: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: unb64(saltB64), iterations: iter }, key, 256);
+  return b64(new Uint8Array(bits));
+}
+function sameText(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+async function attempts(k: string, windowMs: number): Promise<number> {
+  const since = new Date(Date.now() - windowMs).toISOString();
+  const { count } = await db.from("tandem_attempts").select("id", { count: "exact", head: true }).eq("k", k).gte("at", since);
+  return count ?? 0;
+}
+const note = (k: string) => db.from("tandem_attempts").insert({ k });
+
+function passwordProblem(pw: string, email: string): string {
+  if (pw.length < 8) return "The password needs at least eight characters.";
+  if (pw.length > 200) return "That password is too long.";
+  if (COMMON_PASSWORDS.includes(pw.toLowerCase()) || pw.toLowerCase() === email) return "That password is too easy to guess. Please choose another.";
+  return "";
+}
+
+async function startSession(accountId: string, req: Request): Promise<string> {
+  const token = rand(40, ALPHA_KEY);
+  const device = clean(req.headers.get("user-agent"), 120);
+  await db.from("tandem_sessions").insert({
+    id: await sha256(token), account: accountId, device,
+    expires_at: new Date(Date.now() + SESSION_DAYS * 86400000).toISOString(),
+  });
+  return token;
+}
+
+async function authAccount(req: Request) {
+  const h = req.headers.get("authorization") || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+  if (token.length < 30 || token.length > 80) return null;
+  const sid = await sha256(token);
+  const { data: s } = await db.from("tandem_sessions").select("id, account, expires_at, last_used").eq("id", sid).maybeSingle();
+  if (!s || new Date(s.expires_at).getTime() < Date.now()) return null;
+  const { data: a } = await db.from("tandem_accounts").select("id, email, name, profile").eq("id", s.account).maybeSingle();
+  if (!a) return null;
+  if (Date.now() - new Date(s.last_used).getTime() > 86400000) {
+    await db.from("tandem_sessions").update({
+      last_used: new Date().toISOString(), expires_at: new Date(Date.now() + SESSION_DAYS * 86400000).toISOString(),
+    }).eq("id", sid);
+  }
+  return { ...a, sid };
+}
+
+// The profile holds the calendars an account belongs to, the rules that hide or soften events, and the Home layout.
+// Maps are merged one entry at a time and the newest change wins, so two devices never overwrite each other.
+const objAt = (x: any) => (x && typeof x === "object" ? Number(x.at) || 0 : 0);
+function mergeMap(cur: Record<string, any>, inc: Record<string, any>, max: number, okEntry: (id: string, e: any) => any) {
+  const out: Record<string, any> = { ...cur };
+  for (const [id, raw] of Object.entries(inc || {})) {
+    if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(id)) continue;
+    const e = okEntry(id, raw);
+    if (!e) continue;
+    if (!out[id] || e.at > objAt(out[id])) out[id] = e;
+  }
+  const ids = Object.keys(out);
+  if (ids.length > max) {
+    ids.sort((a, b) => objAt(out[b]) - objAt(out[a]));
+    for (const id of ids.slice(max)) delete out[id];
+  }
+  return out;
+}
+const okRoom = (_id: string, e: any) => {
+  if (!e || typeof e !== "object") return null;
+  const at = Number(e.at) || 0;
+  if (e.gone) return { gone: true, at };
+  const key = String(e.key || "");
+  if (!/^[a-z0-9]{6,32}\.[A-Za-z0-9]{16,64}$/.test(key)) return null;
+  return { key, me: clean(e.me, 64), at, feedToken: clean(e.feedToken, 64) };
+};
+const okRule = (_id: string, e: any) => {
+  if (!e || typeof e !== "object" || JSON.stringify(e).length > 700) return null;
+  const at = Number(e.at) || 0;
+  if (e.gone) return { gone: true, at };
+  if (e.mode !== "hide" && e.mode !== "optional") return null;
+  return e;
+};
+function mergeProfile(cur: any, inc: any) {
+  cur = cur && typeof cur === "object" ? cur : {};
+  inc = inc && typeof inc === "object" ? inc : {};
+  const out: Record<string, any> = {
+    rooms: mergeMap(cur.rooms || {}, inc.rooms || {}, 100, okRoom),
+    rules: mergeMap(cur.rules || {}, inc.rules || {}, 400, okRule),
+    widgets: cur.widgets || null,
+  };
+  const w = inc.widgets;
+  if (w && typeof w === "object" && Array.isArray(w.val) && w.val.length <= 40 && JSON.stringify(w.val).length < 20000 && objAt(w) > objAt(out.widgets)) {
+    out.widgets = { at: objAt(w), val: w.val };
+  }
+  return out;
+}
+
+async function sendMail(to: string, subject: string, text: string, html: string): Promise<boolean> {
+  if (!RESEND_KEY) return false;
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "authorization": "Bearer " + RESEND_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text, html }),
+    });
+    if (!res.ok) console.error("mail failed", res.status, (await res.text()).slice(0, 300));
+    return res.ok;
+  } catch (e) {
+    console.error("mail error", String(e));
+    return false;
+  }
+}
+const escHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+
+function resetMail(name: string, link: string) {
+  const who = name ? "Hello " + name + "," : "Hello,";
+  const text = `${who}
+
+Someone asked to reset the password for the Tandem account that uses this email address. If that was you, open the link below within one hour and choose a new password.
+
+${link}
+
+If you did not ask for this, you can ignore this email and your password will stay the same.
+
+Tandem, built by Daniel Chidi, Founder, Adachi Industries.`;
+  const html = `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:#15181D;max-width:520px">
+<p>${escHtml(who)}</p>
+<p>Someone asked to reset the password for the Tandem account that uses this email address. If that was you, choose the button below within one hour and set a new password.</p>
+<p><a href="${escHtml(link)}" style="display:inline-block;background:#2F5BD9;color:#FFFFFF;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600">Choose a new password</a></p>
+<p style="color:#5C6572;font-size:13px">If the button does not work, copy this address into your browser:<br>${escHtml(link)}</p>
+<p>If you did not ask for this, you can ignore this email and your password will stay the same.</p>
+<p style="color:#5C6572;font-size:13px">Tandem, built by Daniel Chidi, Founder, Adachi Industries.</p></div>`;
+  return { text, html };
+}
+
+const safeName = (s: unknown) => clean(s, 40).replace(/[\u0000-\u001f<>]/g, "");
+const session = (a: any) => ({ email: a.email, name: a.name });
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   try {
@@ -329,6 +489,194 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       await db.from("tandem_links").delete().eq("room", room.id);
       return json({ key: `${room.id}.${secret}`, feedToken: feed });
+    }
+
+
+    // ---------- accounts ----------
+    if (req.method === "POST" && path === "/auth/signup") {
+      const body = await readJson(req);
+      const email = clean(body.email, 254).toLowerCase();
+      const pw = String(body.password ?? "");
+      const name = safeName(body.name);
+      if (!EMAIL_RE.test(email)) return json({ error: "Please enter a valid email address." }, 400);
+      if (!name) return json({ error: "Please enter your name." }, 400);
+      const bad = passwordProblem(pw, email);
+      if (bad) return json({ error: bad }, 400);
+      const ip = ipOf(req);
+      if ((await attempts("signup:" + ip, 86400000)) >= 10) return json({ error: "Too many accounts were created from this connection today. Please try again tomorrow." }, 429);
+      const { data: ex } = await db.from("tandem_accounts").select("id").eq("email", email).maybeSingle();
+      if (ex) return json({ error: "An account with that email address already exists. Try signing in, or reset the password." }, 409);
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      const id = rand(16, ALPHA_ID);
+      const { error } = await db.from("tandem_accounts").insert({ id, email, name, pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(pw, salt, PW_ITER) });
+      if (error) return json({ error: "An account with that email address already exists." }, 409);
+      await note("signup:" + ip);
+      const token = await startSession(id, req);
+      return json({ token, account: { email, name }, profile: {} });
+    }
+
+    if (req.method === "POST" && path === "/auth/login") {
+      const body = await readJson(req);
+      const email = clean(body.email, 254).toLowerCase();
+      const pw = String(body.password ?? "").slice(0, 200);
+      const ip = ipOf(req);
+      if ((await attempts("login:" + email, 900000)) >= 8 || (await attempts("loginip:" + ip, 900000)) >= 40) {
+        return json({ error: "Too many attempts. Please wait a few minutes, then try again." }, 429);
+      }
+      const { data: a } = await db.from("tandem_accounts").select("id, email, name, pw_hash, pw_salt, pw_iter, profile").eq("email", email).maybeSingle();
+      const fallbackSalt = b64(new Uint8Array(16));
+      const got = await derive(pw, a ? a.pw_salt : fallbackSalt, a ? a.pw_iter : PW_ITER);
+      if (!a || !sameText(got, a.pw_hash)) {
+        await note("login:" + email);
+        await note("loginip:" + ip);
+        return json({ error: "That email address and password do not match." }, 401);
+      }
+      await db.from("tandem_attempts").delete().eq("k", "login:" + email);
+      await db.from("tandem_attempts").delete().lt("at", new Date(Date.now() - 86400000).toISOString());
+      await db.from("tandem_sessions").delete().lt("expires_at", new Date().toISOString());
+      const token = await startSession(a.id, req);
+      return json({ token, account: session(a), profile: a.profile || {} });
+    }
+
+    if (req.method === "POST" && path === "/auth/logout") {
+      const a = await authAccount(req);
+      if (a) await db.from("tandem_sessions").delete().eq("id", a.sid);
+      return json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/account/sync") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req, 400000);
+      const merged = mergeProfile(a.profile, body.profile);
+      if (JSON.stringify(merged).length > 250000) return json({ error: "The account has too much saved data." }, 413);
+      if (body.profile) {
+        const { error } = await db.from("tandem_accounts").update({ profile: merged, updated_at: new Date().toISOString() }).eq("id", a.id);
+        if (error) throw error;
+      }
+      return json({ account: session(a), profile: merged });
+    }
+
+    if (req.method === "POST" && path === "/account/update") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req);
+      const name = safeName(body.name);
+      if (!name) return json({ error: "Please enter your name." }, 400);
+      await db.from("tandem_accounts").update({ name, updated_at: new Date().toISOString() }).eq("id", a.id);
+      return json({ account: { email: a.email, name } });
+    }
+
+    if (req.method === "POST" && path === "/auth/password") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req);
+      const ip = ipOf(req);
+      if ((await attempts("login:" + a.email, 900000)) >= 8) return json({ error: "Too many attempts. Please wait a few minutes, then try again." }, 429);
+      const { data: row } = await db.from("tandem_accounts").select("pw_hash, pw_salt, pw_iter").eq("id", a.id).single();
+      if (!row || !sameText(await derive(String(body.current ?? "").slice(0, 200), row.pw_salt, row.pw_iter), row.pw_hash)) {
+        await note("login:" + a.email);
+        await note("loginip:" + ip);
+        return json({ error: "The current password is not correct." }, 401);
+      }
+      const next = String(body.next ?? "");
+      const bad = passwordProblem(next, a.email);
+      if (bad) return json({ error: bad }, 400);
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      await db.from("tandem_accounts").update({ pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(next, salt, PW_ITER), updated_at: new Date().toISOString() }).eq("id", a.id);
+      await db.from("tandem_sessions").delete().eq("account", a.id).neq("id", a.sid);
+      return json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/auth/delete") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req);
+      const { data: row } = await db.from("tandem_accounts").select("pw_hash, pw_salt, pw_iter").eq("id", a.id).single();
+      if (!row || !sameText(await derive(String(body.password ?? "").slice(0, 200), row.pw_salt, row.pw_iter), row.pw_hash)) {
+        return json({ error: "The password is not correct." }, 401);
+      }
+      await db.from("tandem_accounts").delete().eq("id", a.id);
+      return json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/auth/reset/request") {
+      const body = await readJson(req);
+      const email = clean(body.email, 254).toLowerCase();
+      const ip = ipOf(req);
+      if (!EMAIL_RE.test(email)) return json({ error: "Please enter a valid email address." }, 400);
+      if ((await attempts("reset:" + email, 3600000)) >= 3 || (await attempts("resetip:" + ip, 3600000)) >= 10) {
+        return json({ error: "A reset email was requested a few times already. Please wait an hour, then try again." }, 429);
+      }
+      await note("reset:" + email);
+      await note("resetip:" + ip);
+      const { data: a } = await db.from("tandem_accounts").select("id, name").eq("email", email).maybeSingle();
+      if (a && RESEND_KEY) {
+        const token = rand(40, ALPHA_KEY);
+        await db.from("tandem_resets").delete().eq("account", a.id);
+        await db.from("tandem_resets").insert({ token_hash: await sha256(token), account: a.id, expires_at: new Date(Date.now() + 3600000).toISOString() });
+        const m = resetMail(a.name, SITE + "#reset=" + token);
+        await sendMail(email, "Reset your Tandem password", m.text, m.html);
+      }
+      // The answer is the same whether or not an account exists, so this cannot be used to find out who has one.
+      return json({ ok: true, mail: !!RESEND_KEY });
+    }
+
+    if (req.method === "POST" && path === "/auth/reset/confirm") {
+      const body = await readJson(req);
+      const token = String(body.token ?? "");
+      if (token.length < 30 || token.length > 80) return json({ error: "This reset link is not valid or has expired." }, 400);
+      const ip = ipOf(req);
+      if ((await attempts("resetconf:" + ip, 900000)) >= 20) return json({ error: "Too many attempts. Please wait a few minutes, then try again." }, 429);
+      const th = await sha256(token);
+      const { data: r } = await db.from("tandem_resets").select("account, expires_at").eq("token_hash", th).maybeSingle();
+      if (!r || new Date(r.expires_at).getTime() < Date.now()) {
+        await note("resetconf:" + ip);
+        return json({ error: "This reset link is not valid or has expired. Please ask for a new one." }, 400);
+      }
+      const { data: a } = await db.from("tandem_accounts").select("id, email, name, profile").eq("id", r.account).single();
+      const pw = String(body.password ?? "");
+      const bad = passwordProblem(pw, a.email);
+      if (bad) return json({ error: bad }, 400);
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      await db.from("tandem_accounts").update({ pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(pw, salt, PW_ITER), updated_at: new Date().toISOString() }).eq("id", a.id);
+      await db.from("tandem_resets").delete().eq("account", a.id);
+      await db.from("tandem_sessions").delete().eq("account", a.id);
+      const t = await startSession(a.id, req);
+      return json({ token: t, account: session(a), profile: a.profile || {} });
+    }
+
+    // ---------- ticket files that belong to an account ----------
+    if (req.method === "POST" && path === "/file/put") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in to keep a ticket file." }, 401);
+      const body = await readJson(req, MAX_FILE_B64 + 4000);
+      const data = String(body.data ?? "");
+      if (!data || data.length > MAX_FILE_B64 || !/^[A-Za-z0-9+/=]+$/.test(data)) return json({ error: "That file is too large to keep. The limit is about 1.5 megabytes." }, 413);
+      const { count } = await db.from("tandem_files").select("id", { count: "exact", head: true }).eq("account", a.id);
+      if ((count ?? 0) >= MAX_FILES) return json({ error: "You have reached the limit of " + MAX_FILES + " saved ticket files. Delete one first." }, 400);
+      const type = /^[\w.+-]+\/[\w.+-]+$/.test(String(body.type ?? "")) ? String(body.type).slice(0, 80) : "application/octet-stream";
+      const id = rand(20, ALPHA_ID);
+      const { error } = await db.from("tandem_files").insert({ id, account: a.id, name: clean(body.name, 120) || "Ticket", type, size: Math.floor(data.length * 0.75), data });
+      if (error) throw error;
+      return json({ id });
+    }
+
+    if (req.method === "POST" && path === "/file/get") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in to open a ticket file." }, 401);
+      const body = await readJson(req);
+      const { data } = await db.from("tandem_files").select("name, type, data").eq("account", a.id).eq("id", clean(body.id, 40)).maybeSingle();
+      if (!data) return json({ error: "That file is no longer available." }, 404);
+      return json(data);
+    }
+
+    if (req.method === "POST" && path === "/file/delete") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req);
+      await db.from("tandem_files").delete().eq("account", a.id).eq("id", clean(body.id, 40));
+      return json({ ok: true });
     }
 
     const m = path.match(/^\/feed\/([a-z0-9]+)\/([A-Za-z0-9]+)\.ics$/);
