@@ -107,6 +107,38 @@ ok('ids are stable for the same event and differ otherwise', again[0] === again[
 r = C.parseICS(ics(['UID:1', 'DTSTART:20261123T090000', 'SUMMARY:A'], ['UID:2', 'DTSTART:20261124T090000', 'SUMMARY:B'], ['UID:3', 'DTSTART:20261125T090000', 'SUMMARY:C']), { max: 2 });
 ok('the limit is respected and reported', r.events.length === 2 && r.truncated, r);
 
+/* personal rules: hide an event or mark it optional, for one person only */
+const mk = (id, data) => ({ id, data: Object.assign({ date: '2026-11-16', allDay: false, start: '09:00', end: '10:00' }, data) });
+const lec = mk('l1', { title: 'Programming Lecture', start: '09:00', end: '11:00', repeat: 'weekly' });
+const lab = mk('l2', { title: 'Programming Lab', start: '14:00', end: '16:00', repeat: 'weekly' });
+const occ = (e, d) => C.byDate([e], d, d)[d][0];
+ok('an event rule matches that event only', C.ruleStatus([{ room: 'r', mode: 'hide', ev: 'l1' }], 'r', occ(lec, '2026-11-23')) === 'hide' && C.ruleStatus([{ room: 'r', mode: 'hide', ev: 'l1' }], 'r', occ(lab, '2026-11-23')) === null);
+ok('a rule for one day leaves the other days alone', C.ruleStatus([{ room: 'r', mode: 'hide', ev: 'l1', day: '2026-11-23' }], 'r', occ(lec, '2026-11-23')) === 'hide' && C.ruleStatus([{ room: 'r', mode: 'hide', ev: 'l1', day: '2026-11-23' }], 'r', occ(lec, '2026-11-30')) === null);
+ok('a title rule ignores case and spacing', C.ruleStatus([{ room: 'r', mode: 'optional', title: C.normTitle('programming  lab') }], 'r', occ(lab, '2026-11-16')) === 'optional');
+const after1 = { room: 'r', mode: 'optional', after: '13:00' };
+ok('after one o clock marks the afternoon only', C.ruleStatus([after1], 'r', occ(lab, '2026-11-16')) === 'optional' && C.ruleStatus([after1], 'r', occ(lec, '2026-11-16')) === null);
+ok('a time rule never matches an all day event', C.ruleStatus([after1], 'r', occ(mk('a', { title: 'Birthday', allDay: true }), '2026-11-16')) === null);
+ok('a weekday set restricts a rule', C.ruleStatus([{ room: 'r', mode: 'optional', after: '13:00', days: [2] }], 'r', occ(lab, '2026-11-16')) === null && C.ruleStatus([{ room: 'r', mode: 'optional', after: '13:00', days: [1] }], 'r', occ(lab, '2026-11-16')) === 'optional');
+ok('hide wins over optional', C.ruleStatus([after1, { room: 'r', mode: 'hide', ev: 'l2' }], 'r', occ(lab, '2026-11-16')) === 'hide');
+ok('a rule belongs to its own calendar', C.ruleStatus([{ room: 'other', mode: 'hide', ev: 'l1' }], 'r', occ(lec, '2026-11-16')) === null && C.ruleStatus([{ room: '*', mode: 'hide', ev: 'l1' }], 'r', occ(lec, '2026-11-16')) === 'hide');
+ok('a rule with no condition matches nothing', C.ruleStatus([{ room: 'r', mode: 'hide' }], 'r', occ(lec, '2026-11-16')) === null);
+ok('a removed rule does nothing', C.ruleStatus([{ room: 'r', mode: 'hide', ev: 'l1', gone: true }], 'r', occ(lec, '2026-11-16')) === null);
+const optMap = C.byDate([lec, lab], '2026-11-16', '2026-11-16', null, (o) => C.ruleStatus([after1], 'r', o) !== 'optional');
+eq('the occurrence filter removes optional events from a day', optMap['2026-11-16'].map((o) => o.id), ['l1']);
+eq('free time ignores optional events', C.freeTogether([lab], '2026-11-16', 1, (o) => C.ruleStatus([after1], 'r', o) !== 'optional')[0].status, 'free');
+const tr = C.cleanEvent({ title: 'Train', date: '2026-11-20', start: '10:30', end: '12:45', trip: { mode: 'train', from: 'A', to: 'B', junk: 'x' }, att: { id: 'f1', name: 't.pdf', type: 'application/pdf', by: 'm' }, imp: 'b1', impn: 'file.csv' }).data;
+ok('travel details, attachment and import tag are kept, unknown fields are not', tr.trip.from === 'A' && !tr.trip.junk && tr.att.id === 'f1' && tr.imp === 'b1' && tr.impn === 'file.csv', tr);
+
+/* writing a calendar file, and reading it back */
+const out = C.toICS('Our, calendar', [
+  { id: 'e1', data: { title: 'Dinner; with Annie', date: '2026-11-20', allDay: false, start: '19:00', end: '21:00', place: 'Soho', notes: 'Book a table\nBring cash', who: ['a'], repeat: 'weekly', until: '2026-12-18' } },
+  { id: 'e2', data: { title: 'Trip', date: '2026-12-01', endDate: '2026-12-03', allDay: true } },
+  { id: 'e3', data: { title: 'Gone', date: '2026-12-01', allDay: true }, deleted: true }
+], { a: 'Annie' });
+const back = C.parseICS(out).events;
+ok('an exported file reads back with the same events', back.length === 2 && back[0].data.title === 'Dinner; with Annie' && back[0].data.start === '19:00' && back[0].data.repeat === 'weekly' && back[0].data.until === '2026-12-18' && back[0].data.place === 'Soho' && back[1].data.endDate === '2026-12-03' && back[1].data.allDay, back);
+ok('lines in the exported file are folded to 75 bytes', out.split('\r\n').every((l) => Buffer.byteLength(l) <= 75));
+
 /* colours */
 ok('white text on a dark colour', C.inkOn('#3A6EA5') === '#FFFFFF');
 ok('dark text on a light colour', C.inkOn('#F5D76E') === '#15181D');

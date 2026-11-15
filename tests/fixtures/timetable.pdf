@@ -1,0 +1,54 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 723 >>
+stream
+BT /F1 11 Tf
+1 0 0 1 50 780 Tm (Semester 1 Timetable) Tj
+1 0 0 1 50 740 Tm (Day) Tj
+1 0 0 1 140 740 Tm (Time) Tj
+1 0 0 1 260 740 Tm (Module) Tj
+1 0 0 1 420 740 Tm (Room) Tj
+1 0 0 1 50 718 Tm (Monday) Tj
+1 0 0 1 140 718 Tm (09:00 - 11:00) Tj
+1 0 0 1 260 718 Tm (Programming Lecture) Tj
+1 0 0 1 420 718 Tm (JGG10) Tj
+1 0 0 1 50 696 Tm (Monday) Tj
+1 0 0 1 140 696 Tm (14:00 - 15:00) Tj
+1 0 0 1 260 696 Tm (Programming Lab) Tj
+1 0 0 1 420 696 Tm (CS4) Tj
+1 0 0 1 50 674 Tm (Tuesday) Tj
+1 0 0 1 140 674 Tm (10:00 - 12:00) Tj
+1 0 0 1 260 674 Tm (Databases) Tj
+1 0 0 1 420 674 Tm (LT2) Tj
+1 0 0 1 50 652 Tm (Thursday) Tj
+1 0 0 1 140 652 Tm (13:00 - 14:00) Tj
+1 0 0 1 260 652 Tm (Networks Seminar) Tj
+1 0 0 1 420 652 Tm (LT1) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001015 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1085
+%%EOF

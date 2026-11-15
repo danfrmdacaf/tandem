@@ -71,7 +71,7 @@
 
   /* map of date -> occurrences, for every day in [from, to].
      events is an array of { id, data, deleted }. keep is an optional filter on the event data. */
-  function byDate(events, from, to, keep) {
+  function byDate(events, from, to, keep, occKeep) {
     var out = {};
     events.forEach(function (e) {
       if (e.deleted || !e.data || !e.data.title) return;
@@ -82,7 +82,9 @@
         for (var i = 0; i <= len; i++) {
           var day = add(start, i);
           if (day < from || day > to) continue;
-          (out[day] = out[day] || []).push({ id: e.id, data: e.data, date: day, start: start, end: end, first: i === 0, last: i === len, key: e.id + ':' + start });
+          var o = { id: e.id, data: e.data, date: day, start: start, end: end, first: i === 0, last: i === len, key: e.id + ':' + start };
+          if (occKeep && !occKeep(o)) continue;
+          (out[day] = out[day] || []).push(o);
         }
       });
     });
@@ -106,8 +108,8 @@
   }
 
   /* next occurrences from today onwards, soonest first. now is the current time as HH:MM. */
-  function upcoming(events, today, now, limit, horizon) {
-    var to = add(today, horizon || 180), map = byDate(events, today, to), list = [];
+  function upcoming(events, today, now, limit, horizon, occKeep) {
+    var to = add(today, horizon || 180), map = byDate(events, today, to, null, occKeep), list = [];
     Object.keys(map).sort().forEach(function (day) {
       map[day].forEach(function (o) {
         if (day === today && !o.data.allDay && o.data.end && o.last && o.start === o.end && o.data.end < now) return;
@@ -118,8 +120,8 @@
   }
 
   /* for each of the next n days: free, evening (everything finishes by 17:30) or busy */
-  function freeTogether(events, from, n) {
-    var to = add(from, n - 1), map = byDate(events, from, to), res = [];
+  function freeTogether(events, from, n, occKeep) {
+    var to = add(from, n - 1), map = byDate(events, from, to, null, occKeep), res = [];
     for (var i = 0; i < n; i++) {
       var day = add(from, i), occ = map[day] || [], status = 'free';
       if (occ.length) {
@@ -157,7 +159,60 @@
     if (raw.place) d.place = String(raw.place).trim().slice(0, 120);
     if (raw.notes) d.notes = String(raw.notes).trim().slice(0, 1500);
     if (raw.by) d.by = raw.by;
+    /* where an event came from, and travel details */
+    if (raw.imp) { d.imp = String(raw.imp).slice(0, 24); if (raw.impn) d.impn = String(raw.impn).slice(0, 60); }
+    if (raw.trip && typeof raw.trip === 'object') {
+      var t = {};
+      ['mode', 'from', 'to', 'dep', 'arr', 'arrDate', 'ref', 'seat', 'carrier', 'cls'].forEach(function (k) { if (raw.trip[k]) t[k] = String(raw.trip[k]).trim().slice(0, 80); });
+      if (Object.keys(t).length) d.trip = t;
+    }
+    if (raw.att && typeof raw.att === 'object' && raw.att.id) {
+      d.att = { id: String(raw.att.id).slice(0, 40), name: String(raw.att.name || 'Ticket').slice(0, 120), type: String(raw.att.type || '').slice(0, 80) };
+      if (raw.att.by) d.att.by = String(raw.att.by).slice(0, 64);
+    }
     return { data: d };
+  }
+
+  /* ---------- personal rules: hide an event, or mark it optional ----------
+     A rule only changes what one person sees. It never changes the event itself, so it never reaches anyone else.
+     rule = { id, room, mode: 'hide' | 'optional', ev?, day?, title?, after?, before?, days? }
+     Every field that is present has to match. A rule with none of ev, title, after or before matches nothing. */
+  function normTitle(t) { return String(t || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
+  function ruleMatches(rule, roomId, o) {
+    if (!rule || rule.gone || (rule.room && rule.room !== '*' && rule.room !== roomId)) return false;
+    var has = false, d = o.data || {};
+    if (rule.ev) { has = true; if (o.id !== rule.ev) return false; }
+    if (rule.title) { has = true; if (normTitle(d.title) !== rule.title) return false; }
+    if (rule.after || rule.before) {
+      has = true;
+      if (d.allDay || !d.start) return false;
+      if (rule.after && d.start < rule.after) return false;
+      if (rule.before && d.start >= rule.before) return false;
+    }
+    if (!has) return false;
+    if (rule.day && o.start !== rule.day) return false;
+    if (rule.days && rule.days.length && rule.days.indexOf(dow(o.date)) < 0) return false;
+    return true;
+  }
+  /* 'hide', 'optional' or null. Hiding wins over optional. */
+  function ruleStatus(rules, roomId, o) {
+    var st = null;
+    for (var i = 0; i < rules.length; i++) {
+      if (ruleMatches(rules[i], roomId, o)) { if (rules[i].mode === 'hide') return 'hide'; st = 'optional'; }
+    }
+    return st;
+  }
+  var DAYSETS = { all: null, weekdays: [1, 2, 3, 4, 5], weekend: [0, 6] };
+  function describeRule(r, dowNames) {
+    var parts = [];
+    if (r.title && !r.ev) parts.push('every event called \u201c' + (r.label || r.title) + '\u201d');
+    else if (r.ev) parts.push((r.label ? '\u201c' + r.label + '\u201d' : 'one event') + (r.day ? ' on ' + r.day.split('-').reverse().join('/') : ', every time it repeats'));
+    else parts.push('every event');
+    if (r.after && r.before) parts.push('starting from ' + r.after + ' until ' + r.before);
+    else if (r.after) parts.push('starting at or after ' + r.after);
+    else if (r.before) parts.push('starting before ' + r.before);
+    if (r.days && r.days.length && r.days.length < 7) parts.push('on ' + r.days.map(function (x) { return (dowNames || ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])[x]; }).join(', '));
+    return parts.join(' ');
   }
 
   /* ---------- reading calendar files (iCalendar) ----------
@@ -292,8 +347,43 @@
     return { events: out, skipped: skipped, simplified: simplified, truncated: truncated };
   }
 
+
+  /* ---------- writing a calendar file (iCalendar) ---------- */
+  function icsEsc(t) { return String(t).replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+  function foldLine(line) {
+    var out = '', cur = '', bytes = 0;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i], cp = line.codePointAt(i), n = cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+      if (cp > 65535) { ch = line.slice(i, i + 2); i++; }
+      if (bytes + n > 74) { out += cur + '\r\n '; cur = ch; bytes = 1 + n; } else { cur += ch; bytes += n; }
+    }
+    return out + cur;
+  }
+  /* events: [{ id, data, deleted }], members: { id: name } */
+  function toICS(name, events, members) {
+    var stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    var L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Adachi Industries//Tandem//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:' + icsEsc(name || 'Tandem')];
+    var RR = { daily: 'FREQ=DAILY', weekly: 'FREQ=WEEKLY', fortnightly: 'FREQ=WEEKLY;INTERVAL=2', monthly: 'FREQ=MONTHLY', yearly: 'FREQ=YEARLY' };
+    var cd = function (d) { return d.replace(/-/g, ''); };
+    events.forEach(function (e) {
+      var d = e.data; if (e.deleted || !d || !d.title || !isDate(d.date)) return;
+      var end = d.endDate && isDate(d.endDate) && d.endDate >= d.date ? d.endDate : d.date;
+      L.push('BEGIN:VEVENT', 'UID:' + e.id + '@tandem.adachiindustries', 'DTSTAMP:' + stamp, 'SUMMARY:' + icsEsc(d.title));
+      if (d.allDay) L.push('DTSTART;VALUE=DATE:' + cd(d.date), 'DTEND;VALUE=DATE:' + cd(add(end, 1)));
+      else L.push('DTSTART:' + cd(d.date) + 'T' + (d.start || '09:00').replace(':', '') + '00', 'DTEND:' + cd(end) + 'T' + (d.end || d.start || '09:00').replace(':', '') + '00');
+      if (RR[d.repeat]) L.push('RRULE:' + RR[d.repeat] + (d.until && isDate(d.until) ? ';UNTIL=' + cd(d.until) + (d.allDay ? '' : 'T235959') : ''));
+      var who = (d.who || []).map(function (m) { return members && members[m]; }).filter(Boolean).join(' and ');
+      var desc = [who ? 'For: ' + who : '', d.notes || ''].filter(Boolean).join('\n');
+      if (desc) L.push('DESCRIPTION:' + icsEsc(desc));
+      if (d.place) L.push('LOCATION:' + icsEsc(d.place));
+      L.push('END:VEVENT');
+    });
+    L.push('END:VCALENDAR');
+    return L.map(foldLine).join('\r\n') + '\r\n';
+  }
+
   return {
-    parseICS: parseICS,
+    toICS: toICS, parseICS: parseICS, ruleMatches: ruleMatches, ruleStatus: ruleStatus, normTitle: normTitle, describeRule: describeRule, DAYSETS: DAYSETS, hash64: hash64,
     pad: pad, isDate: isDate, parse: parse, fmt: fmt, add: add, diff: diff, dow: dow, monday: monday, monthStart: monthStart,
     addMonths: addMonths, daysInMonth: daysInMonth, PALETTE: PALETTE, REPEATS: REPEATS, occurrenceStarts: occurrenceStarts,
     byDate: byDate, timeLabel: timeLabel, upcoming: upcoming, freeTogether: freeTogether, inkOn: inkOn, cleanEvent: cleanEvent,

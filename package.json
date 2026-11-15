@@ -4,7 +4,7 @@
   "private": true,
   "description": "A shared calendar for two people or a small group.",
   "scripts": {
-    "test": "node tests/core.test.mjs"
+    "test": "node tests/core.test.mjs && node tests/import.test.mjs"
   },
   "author": "Daniel Chidi, Adachi Industries"
 }

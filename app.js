@@ -7,6 +7,7 @@
 'use strict';
 var C = window.TandemCore;
 var API = (window.TANDEM_CONFIG || {}).api;
+var T = { hooks: { click: [], change: [], submit: [] }, sections: { top: [], middle: [] }, after: { settings: [] } };
 
 /* ---------- helpers ---------- */
 var DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -35,6 +36,7 @@ var ICON = {
   left: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
   right: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
   sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>'
 };
 
@@ -50,11 +52,11 @@ function defaultWidgets() {
     { id: 'w6', type: 'month', size: 'l', style: 'outline' }
   ];
 }
-function blank() { return { rooms: [], active: null, data: {}, device: { view: 'home', widgets: defaultWidgets(), hidden: {} } }; }
+function blank() { return { rooms: [], active: null, data: {}, rules: {}, goneRooms: {}, account: null, device: { view: 'home', widgets: defaultWidgets(), widgetsAt: 0, hidden: {}, hideOptional: false } }; }
 function load() {
   try {
     var j = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-    if (j && j.rooms) { var b = blank(); j.device = Object.assign(b.device, j.device || {}); j.data = j.data || {}; return j; }
+    if (j && j.rooms) { var b = blank(); j.device = Object.assign(b.device, j.device || {}); j.data = j.data || {}; j.rules = j.rules || {}; j.goneRooms = j.goneRooms || {}; j.account = j.account || null; return j; }
   } catch (e) { /* storage unavailable */ }
   return blank();
 }
@@ -99,6 +101,26 @@ function overlayEvents(d) {
 }
 function overlayList() { var rm = activeRoom(); return rm ? R(rm.id).overlays.list : []; }
 function hiddenSet() { var rm = activeRoom(); return rm ? (S.device.hidden[rm.id] || []) : []; }
+/* personal rules: events this person has hidden or marked optional. They change only what this person sees. */
+function ruleList() {
+  var rm = activeRoom(); if (!rm) return [];
+  return Object.keys(S.rules).map(function (k) { return S.rules[k]; }).filter(function (r) { return !r.gone && (r.room === '*' || r.room === rm.id); });
+}
+/* A filter for occurrences. It also tags each one with o.st, which is 'hide', 'optional' or null.
+   strict drops optional events too, for free time and countdowns. */
+function occView(strict) {
+  var rm = activeRoom(), rules = ruleList();
+  if (!rm) return null;
+  var showHidden = ui.showHidden, hideOpt = S.device.hideOptional;
+  return function (o) {
+    var st = rules.length ? C.ruleStatus(rules, rm.id, o) : null;
+    o.st = st;
+    if (strict) return !st;
+    if (st === 'hide') return !!showHidden;
+    if (st === 'optional') return !hideOpt;
+    return true;
+  };
+}
 function keepFn() {
   var hid = hiddenSet(), mm = memberMap();
   return function (data) {
@@ -130,6 +152,7 @@ function api(path, opts) {
   if (!API) return Promise.reject(new Error('Tandem has not been configured.'));
   var headers = { 'content-type': 'application/json' };
   if (opts.key) headers['x-tandem-key'] = opts.key;
+  if (opts.token) headers.authorization = 'Bearer ' + opts.token;
   return fetch(API + path, { method: 'POST', headers: headers, body: JSON.stringify(opts.body || {}) }).then(function (res) {
     return res.json().catch(function () { return null; }).then(function (json) {
       if (!res.ok) { var err = new Error((json && json.error) || 'The request did not succeed.'); err.status = res.status; throw err; }
@@ -190,7 +213,8 @@ function put(kind, id, data, deleted, quiet) {
 }
 
 /* ---------- ui state ---------- */
-var ui = { date: localToday(), edit: false, status: '', code: null, deferredInstall: null };
+var ui = { date: localToday(), edit: false, status: '', code: null, deferredInstall: null, showHidden: false };
+function widgetsChanged() { S.device.widgetsAt = Date.now(); save(); if (T.acctSchedule) T.acctSchedule(); }
 function today() { return localToday(); }
 
 /* ---------- widgets ---------- */
@@ -201,23 +225,23 @@ var LIMITS = { today: { s: 2, m: 4, l: 9 }, next: { s: 2, m: 3, l: 7 } };
 
 function eventRow(o, td, opts) {
   var dot = dotFor(o.data), st = dot ? ' style="--c:' + dot + '"' : '';
-  return '<div class="row"><span class="tm">' + esc(opts && opts.day ? relDay(o.date, td) : (o.data.allDay ? 'All day' : (o.data.start || ''))) + '</span><span class="dot"' + st + '></span><span class="tx">' + esc(o.data.title) + (opts && opts.day && !o.data.allDay && o.data.start ? ' <span class="sub">' + esc(o.data.start) + '</span>' : '') + '</span></div>';
+  return '<div class="row' + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '"><span class="tm">' + esc(opts && opts.day ? relDay(o.date, td) : (o.data.allDay ? 'All day' : (o.data.start || ''))) + '</span><span class="dot"' + st + '></span><span class="tx">' + esc(o.data.title) + (opts && opts.day && !o.data.allDay && o.data.start ? ' <span class="sub">' + esc(o.data.start) + '</span>' : '') + '</span></div>';
 }
 function widgetBody(w) {
-  var td = today(), evs = eventsList(), keep = keepFn(), now = nowHM(), body = '';
+  var td = today(), evs = eventsList(), keep = keepFn(), now = nowHM(), body = '', vf = occView(false), vs = occView(true);
   var filtered = evs.filter(function (e) { return !e.deleted && e.data && keep(e.data); });
   if (w.type === 'today') {
-    var occ = (C.byDate(filtered, td, td)[td] || []).filter(function (o) { return !(o.start === o.end && !o.data.allDay && o.data.end && o.data.end < now); });
+    var occ = (C.byDate(filtered, td, td, null, vf)[td] || []).filter(function (o) { return !(o.start === o.end && !o.data.allDay && o.data.end && o.data.end < now); });
     var lim = LIMITS.today[w.size];
     body = '<h4>Today</h4><div class="wl">' + (occ.length ? occ.slice(0, lim).map(function (o) { return eventRow(o, td); }).join('') + (occ.length > lim ? '<div class="sub">and ' + (occ.length - lim) + ' more</div>' : '') : '<div class="sub">Nothing else planned today.</div>') + '</div>';
   } else if (w.type === 'next') {
-    var up = C.upcoming(filtered, td, now, LIMITS.next[w.size]);
+    var up = C.upcoming(filtered, td, now, LIMITS.next[w.size], undefined, vf);
     body = '<h4>Next up</h4><div class="wl">' + (up.length ? up.map(function (o) { return eventRow(o, td, { day: true }); }).join('') : '<div class="sub">Nothing coming up.</div>') + '</div>';
   } else if (w.type === 'countdown') {
     var target = null, own = filtered.filter(function (e) { return !e.data.ov; });
     if (w.pin) { var pe = own.filter(function (e) { return e.id === w.pin; })[0]; if (pe) { var st = C.occurrenceStarts(pe.data, td, C.add(td, 800)); if (st.length) target = { date: st[0], title: pe.data.title }; } }
     if (!target) {
-      var cands = C.upcoming(own, C.add(td, 1), '00:00', 40), pick = cands.filter(function (o) { return o.data.allDay; })[0] || cands[0];
+      var cands = C.upcoming(own, C.add(td, 1), '00:00', 40, undefined, vs), pick = cands.filter(function (o) { return o.data.allDay; })[0] || cands[0];
       if (pick) target = { date: pick.date, title: pick.data.title };
     }
     if (target) {
@@ -225,7 +249,7 @@ function widgetBody(w) {
       body = '<h4>Countdown</h4><div class="big">' + n + '</div><div class="cd"><strong>' + (n === 1 ? 'day until ' : 'days until ') + '</strong>' + esc(target.title) + '</div>' + (w.size === 's' ? '' : '<div class="sub">' + esc(niceDate(target.date)) + '</div>');
     } else body = '<h4>Countdown</h4><div class="sub">Add an event and its countdown will appear here.</div>';
   } else if (w.type === 'week') {
-    var mon = C.monday(td), map = C.byDate(filtered, mon, C.add(mon, 6)), cells = '';
+    var mon = C.monday(td), map = C.byDate(filtered, mon, C.add(mon, 6), null, vf), cells = '';
     for (var i = 0; i < 7; i++) {
       var d = C.add(mon, i), list = map[d] || [];
       cells += '<div class="d' + (d === td ? ' today' : '') + '"><span>' + DOW3[C.dow(d)].slice(0, w.size === 's' ? 1 : 3) + '</span><span class="n">' + (+d.slice(8)) + '</span><span class="dots2">' +
@@ -233,11 +257,11 @@ function widgetBody(w) {
     }
     body = '<h4>This week</h4><div class="wk">' + cells + '</div>';
     if (w.size === 'l') {
-      var upw = C.upcoming(filtered, td, now, 4);
+      var upw = C.upcoming(filtered, td, now, 4, undefined, vf);
       body += '<div class="wl">' + upw.map(function (o) { return eventRow(o, td, { day: true }); }).join('') + '</div>';
     }
   } else if (w.type === 'free') {
-    var fr = C.freeTogether(filtered, td, 7);
+    var fr = C.freeTogether(filtered, td, 7, vs);
     var freeDays = fr.filter(function (x) { return x.status === 'free'; }), eveDays = fr.filter(function (x) { return x.status === 'evening'; });
     if (w.size === 's') {
       var nx = freeDays[0] || eveDays[0];
@@ -248,7 +272,7 @@ function widgetBody(w) {
     }
   } else if (w.type === 'month') {
     var first = C.monthStart(td), start = C.monday(first), last = C.add(C.addMonths(first, 1), -1), end = C.add(C.monday(last), 6);
-    var mp = C.byDate(filtered, start, end), cs = '';
+    var mp = C.byDate(filtered, start, end, null, vf), cs = '';
     ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (l) { cs += '<span class="out">' + l + '</span>'; });
     for (var dd = start; dd <= end; dd = C.add(dd, 1)) {
       cs += '<span class="' + (dd === td ? 'today ' : '') + (mp[dd] ? 'has ' : '') + (dd.slice(0, 7) !== td.slice(0, 7) ? 'out' : '') + '">' + (+dd.slice(8)) + '</span>';
@@ -283,9 +307,17 @@ function peopleBar() {
     return '<button type="button" class="person ovp" data-act="toggle-person" data-id="ov:' + esc(sh.share) + '" aria-pressed="' + (hid.indexOf('ov:' + sh.share) < 0) + '"><span class="dot ov"' + (col ? ' style="--c:' + col + '"' : '') + '></span>' + esc(sh.label) + '</button>';
   }).join('') + '</div>';
 }
+/* chips to bring back optional and hidden events, shown only when the person has set rules */
+function filterBar() {
+  var rules = ruleList(), nh = rules.filter(function (r) { return r.mode === 'hide'; }).length, no = rules.length - nh;
+  if (!rules.length) return '';
+  return '<div class="people" role="group" aria-label="Optional and hidden events">' +
+    (no ? '<button type="button" class="person" data-act="toggle-optional" aria-pressed="' + !S.device.hideOptional + '">Optional events</button>' : '') +
+    (nh ? '<button type="button" class="person" data-act="toggle-hidden" aria-pressed="' + !!ui.showHidden + '">Hidden events</button>' : '') + '</div>';
+}
 function occItem(o) {
   var b = barAttrs(o.data), t = C.timeLabel(o);
-  return '<button type="button" class="item' + (o.data.ov ? ' ov' : '') + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="in"><div class="tt">' + esc(o.data.title) + '</div><div class="sub">' + esc([t, o.data.place, o.data.ov ? o.data.ovLabel : whoText(o.data)].filter(Boolean).join('  ·  ')) + '</div></span></button>';
+  return '<button type="button" class="item' + (o.data.ov ? ' ov' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="in"><div class="tt">' + esc(o.data.title) + (o.data.att ? ' <span class="tag">Ticket</span>' : '') + (o.st === 'optional' ? ' <span class="tag">Optional</span>' : o.st === 'hide' ? ' <span class="tag">Hidden</span>' : '') + '</div><div class="sub">' + esc([t, o.data.place, o.data.ov ? o.data.ovLabel : whoText(o.data)].filter(Boolean).join('  ·  ')) + '</div></span></button>';
 }
 function viewHome() {
   var td = today(), list = S.device.widgets;
@@ -297,19 +329,19 @@ function viewHome() {
 }
 function viewMonth() {
   var first = C.monthStart(ui.date), start = C.monday(first), last = C.add(C.addMonths(first, 1), -1), end = C.add(C.monday(last), 6);
-  var map = C.byDate(eventsList(), start, end, keepFn()), td = today();
+  var map = C.byDate(eventsList(), start, end, keepFn(), occView(false)), td = today();
   var h = '<div class="mgrid">' + ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(function (x) { return '<div class="dh">' + x + '</div>'; }).join('');
   for (var d = start; d <= end; d = C.add(d, 1)) {
     var occ = map[d] || [], w = C.dow(d);
     h += '<button type="button" class="cell' + (d.slice(0, 7) !== first.slice(0, 7) ? ' out' : '') + (w === 0 || w === 6 ? ' wkend' : '') + (d === td ? ' today' : '') + '" data-act="day" data-date="' + d + '" aria-label="' + esc(niceDate(d)) + '"><span class="dn">' + (+d.slice(8)) + '</span><div class="chips">' +
-      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip' + (o.data.ov ? ' ov' : '') + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
+      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip' + (o.data.ov ? ' ov' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
       (occ.length > 3 ? '<div class="more">and ' + (occ.length - 3) + ' more</div>' : '') + '</div><div class="dots">' +
       occ.slice(0, 6).map(function (o) { var c = dotFor(o.data); return '<span class="dot' + (o.data.ov ? ' ov' : '') + '"' + (c ? ' style="--c:' + c + '"' : '') + '></span>'; }).join('') + '</div></button>';
   }
   return h + '</div>';
 }
 function viewWeek() {
-  var mon = C.monday(ui.date), map = C.byDate(eventsList(), mon, C.add(mon, 6), keepFn()), td = today(), h = '<div class="wgrid">';
+  var mon = C.monday(ui.date), map = C.byDate(eventsList(), mon, C.add(mon, 6), keepFn(), occView(false)), td = today(), h = '<div class="wgrid">';
   for (var i = 0; i < 7; i++) {
     var d = C.add(mon, i), occ = map[d] || [];
     h += '<div class="dcol' + (d === td ? ' today' : '') + '"><h3><span>' + DOW3[C.dow(d)] + ' ' + (+d.slice(8)) + '</span><button type="button" class="iconbtn" style="width:28px;height:28px" data-act="add" data-date="' + d + '" aria-label="Add an event on ' + esc(niceDate(d)) + '">' + ICON.plus + '</button></h3>' +
@@ -318,7 +350,7 @@ function viewWeek() {
   return h + '</div>';
 }
 function viewAgenda() {
-  var td = today(), from = ui.date < td ? td : ui.date, to = C.add(from, 59), map = C.byDate(eventsList(), from, to, keepFn()), days = Object.keys(map).sort();
+  var td = today(), from = ui.date < td ? td : ui.date, to = C.add(from, 59), map = C.byDate(eventsList(), from, to, keepFn(), occView(false)), days = Object.keys(map).sort();
   if (!days.length) return '<div class="empty">Nothing is planned in the next sixty days.</div>';
   return '<div class="agenda">' + days.map(function (d) {
     return '<section><h3>' + esc(relDay(d, td) === 'Today' || relDay(d, td) === 'Tomorrow' ? relDay(d, td) + ', ' + (+d.slice(8)) + ' ' + MONTHS[+d.slice(5, 7) - 1] : niceDate(d)) + '</h3><div class="list">' + map[d].map(occItem).join('') + '</div></section>';
@@ -332,11 +364,7 @@ function periodLabel() {
   return '';
 }
 function viewWelcome() {
-  return '<div class="welcome"><img class="logo" src="icons/icon-192.png" alt="Tandem icon"><h1>Tandem</h1>' +
-    '<p>Tandem is a shared calendar for two people or a small group. Each person has a colour, so you can see at a glance who is busy and when you are free together.</p>' +
-    '<p>Create a calendar and send the other person an invitation link, or join one that has already been shared with you. Nobody needs an account.</p>' +
-    createCard() + joinCard() +
-    '<p class="foot">Built by Daniel Chidi, Founder, Adachi Industries.</p></div>';
+  return T.welcomeHtml ? T.welcomeHtml() : '';
 }
 function colourPicker(name, selected) {
   return '<div class="swatches" role="group" aria-label="Choose your colour">' + C.PALETTE.map(function (c) {
@@ -345,8 +373,9 @@ function colourPicker(name, selected) {
 }
 function createCard() {
   return '<form class="card" id="createform"><h3>Create a calendar</h3>' +
-    '<label class="f">Calendar name<input type="text" id="cr-name" maxlength="60" placeholder="For example, Daniel and Annie" required></label>' +
-    '<label class="f">Your name<input type="text" id="cr-me" maxlength="40" required></label>' +
+    '<label class="f">Calendar name<input type="text" id="cr-name" maxlength="60" placeholder="For example, My timetable, or Daniel and Annie" required></label>' +
+    '<label class="f">Your name<input type="text" id="cr-me" maxlength="40" value="' + esc(T.acctName ? T.acctName() : '') + '" required></label>' +
+    '<label class="chk"><input type="checkbox" id="cr-solo"> This is my own calendar, just for me for now</label>' +
     '<fieldset><legend>Your colour</legend>' + colourPicker('create', C.PALETTE[0]) + '</fieldset>' +
     '<div class="err" id="cr-err"></div><button class="btn primary block" type="submit">Create calendar</button></form>';
 }
@@ -363,15 +392,15 @@ function render() {
   var d = R(rm.id), v = S.device.view, name = d.meta.name || 'Calendar';
   document.title = name + ' | Tandem';
   var h = '<div class="top"><button type="button" class="room" data-act="rooms"><span class="rn">' + esc(name) + '</span>' + ICON.down + '</button><div class="spacer"></div><span class="status" id="status" role="status" aria-live="polite">' + esc(ui.status) + '</span>' +
-    '<button type="button" class="iconbtn" data-act="settings" aria-label="Settings">' + ICON.sliders + '</button></div>';
+    '<button type="button" class="iconbtn" data-act="search" aria-label="Search events">' + ICON.search + '</button><button type="button" class="iconbtn" data-act="settings" aria-label="Settings">' + ICON.sliders + '</button></div>';
   h += '<div class="controls"><div class="seg" role="group" aria-label="View">' + [['home', 'Home'], ['month', 'Month'], ['week', 'Week'], ['agenda', 'Agenda']].map(function (x) {
     return '<button type="button" data-act="view" data-v="' + x[0] + '" aria-pressed="' + (v === x[0]) + '">' + x[1] + '</button>';
   }).join('') + '</div>';
   if (v !== 'home' && v !== 'agenda') {
     h += '<div class="navgrp"><button type="button" class="iconbtn" data-act="prev" aria-label="Earlier">' + ICON.left + '</button><button type="button" class="btn sm" data-act="today">Today</button><button type="button" class="iconbtn" data-act="next" aria-label="Later">' + ICON.right + '</button><span class="period">' + esc(periodLabel()) + '</span></div>';
   }
-  h += '<div class="spacer"></div><button type="button" class="btn primary addbtn" data-act="add">Add event</button></div>';
-  h += peopleBar();
+  h += '<div class="spacer"></div><button type="button" class="btn" data-act="open-import">Import a file</button><button type="button" class="btn" data-act="open-ticket">Add a ticket</button><button type="button" class="btn primary addbtn" data-act="add">Add event</button></div>';
+  h += peopleBar() + filterBar();
   if (rm.invalid) h += '<div class="empty">This calendar link is no longer valid. It may have been replaced. Ask for the new invitation link and open it on this device, or remove the calendar in Settings.</div>';
   h += v === 'home' ? viewHome() : v === 'month' ? viewMonth() : v === 'week' ? viewWeek() : viewAgenda();
   h += '<button type="button" class="fab" data-act="add">' + ICON.plus + 'Add event</button>';
@@ -388,7 +417,7 @@ function openDialog(html) {
 function closeDialog() { var dlg = $('#dlg'); if (dlg.open) { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); } }
 
 function openDay(date) {
-  var map = C.byDate(eventsList(), date, date, keepFn()), occ = map[date] || [];
+  var map = C.byDate(eventsList(), date, date, keepFn(), occView(false)), occ = map[date] || [];
   openDialog('<div class="actions"><h2>' + esc(niceDate(date)) + '</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
     (occ.length ? '<div class="stack">' + occ.map(occItem).join('') + '</div>' : '<p class="note">Nothing is planned on this day.</p>') +
     '<button type="button" class="btn primary" data-act="add" data-date="' + date + '">Add an event</button>');
@@ -432,6 +461,7 @@ function openSettings() {
   }).join('');
   openDialog('<div class="actions"><h2>Settings</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
     (flash ? '<div class="notice" role="status">' + esc(flash) + '</div>' : '') +
+    (T.sections.top || []).map(function (f) { return f(rm); }).join('') +
     '<div class="sect"><h3>Calendar</h3><label class="f">Calendar name<input type="text" id="st-name" maxlength="60" value="' + esc(d.meta.name || '') + '"></label></div>' +
     '<div class="sect"><h3>People</h3>' + people + '</div>' +
     '<div class="sect"><h3>Invite someone or open this calendar on another device</h3>' +
@@ -446,9 +476,7 @@ function openSettings() {
     '<div id="st-shares" class="stack" style="gap:8px"><p class="note">Loading</p></div><div class="note" id="st-share-msg" role="status"></div></div>' +
     (ovs.length ? '<div class="sect"><h3>Other calendars shown here</h3>' + ovs.map(function (sh) { return '<div class="note"><strong>' + esc(sh.label) + '</strong>: ' + (sh.mode === 'busy' ? 'busy times only' : 'titles and places') + '</div>'; }).join('') +
       '<p class="note">These are read only. Use the filter above the calendar to hide one on this device. The person who shared it can stop sharing in their own settings.</p></div>' : '') +
-    '<div class="sect"><h3>Bring in events from a calendar file</h3>' +
-    '<p class="note">Export a calendar as a file ending in .ics, for example from a university timetable, Google Calendar or the Calendar application on a Mac, then choose it here. You will see what it contains before anything is added. The events are added to this calendar for you. Choosing the same file again updates those events instead of duplicating them.</p>' +
-    '<input type="file" id="ics-file" accept=".ics,text/calendar" aria-label="Choose a calendar file"><div id="st-import" class="stack" style="gap:8px"></div></div>' +
+    (T.sections.middle || []).map(function (f) { return f(rm); }).join('') +
     '<div class="sect"><h3>Use the calendar in your own calendar application</h3>' +
     '<p class="note">A website cannot place a widget on the home screen of an iPhone, an iPad or an Android phone. The reliable alternative is to subscribe to this calendar in the Calendar application on your device. Its own widgets will then show the events from Tandem, and it keeps updating by itself. The subscription is read only.</p>' +
     (feed ? '<div class="linkbox">' + esc(feed.replace('https://', 'webcal://')) + '</div><div class="actions"><button type="button" class="btn" data-act="copy-feed">Copy the subscription address</button><a class="btn" href="' + esc(feed.replace('https://', 'webcal://')) + '">Subscribe</a></div>' : '<p class="note">The subscription address appears after the first successful sync.</p>') + '</div>' +
@@ -464,6 +492,7 @@ function openSettings() {
     '<p class="note">Removing a calendar only affects this device. The calendar stays available to everyone else who has the link.</p></div>' +
     '<p class="foot">Tandem is built by Daniel Chidi, Founder, Adachi Industries.</p>');
   loadShares();
+  (T.after.settings || []).forEach(function (f) { f(rm); });
 }
 
 /* ---------- showing this calendar on another ---------- */
@@ -490,37 +519,6 @@ function setShare(rm, el) {
     : api('/share/create', { key: rm.key, body: { targetKey: tr.key, mode: mode, by: tr.me, label: shareLabel(rm) } });
   p.then(function () { el.disabled = false; if (msg) msg.textContent = mode === 'off' ? 'This calendar is no longer shown there.' : 'Saved. It will appear there within a few seconds.'; })
     .catch(function (e) { el.disabled = false; if (msg) msg.textContent = e.message || 'That did not work. Please try again.'; loadShares(); });
-}
-
-/* ---------- bringing in a calendar file ---------- */
-function readImport(file) {
-  var box = $('#st-import'), rm = activeRoom(); if (!box || !file || !rm) return;
-  ui.imp = null;
-  if (file.size > 3000000) { box.innerHTML = '<div class="err">That file is too large to read.</div>'; return; }
-  var rd = new FileReader();
-  rd.onload = function () {
-    var r = C.parseICS(String(rd.result || '')), b = $('#st-import'); if (!b) return;
-    if (!r.events.length) { b.innerHTML = '<div class="err">No events could be read from that file.</div>'; return; }
-    ui.imp = r;
-    var notes = [];
-    if (r.skipped) notes.push(r.skipped + (r.skipped === 1 ? ' entry was' : ' entries were') + ' left out because it was cancelled, moved to another time or had no title.');
-    if (r.simplified) notes.push(r.simplified + (r.simplified === 1 ? ' event uses' : ' events use') + ' a repeat rule that Tandem cannot follow exactly, so ' + (r.simplified === 1 ? 'it' : 'they') + ' may differ from the original.');
-    if (r.truncated) notes.push('Only the first 1000 events were read.');
-    b.innerHTML = '<p><strong>' + r.events.length + (r.events.length === 1 ? ' event' : ' events') + '</strong> can be added to ' + esc(R(rm.id).meta.name || 'this calendar') + ', for you.</p>' +
-      '<div class="stack" style="gap:4px">' + r.events.slice(0, 6).map(function (ev) { return '<div class="note">' + esc(ev.data.title) + ', ' + esc(niceDate(ev.data.date)) + (ev.data.start ? ' at ' + esc(ev.data.start) : '') + (ev.data.repeat ? ', repeating' : '') + '</div>'; }).join('') +
-      (r.events.length > 6 ? '<div class="note">and ' + (r.events.length - 6) + ' more</div>' : '') + '</div>' +
-      notes.map(function (n) { return '<p class="note">' + esc(n) + '</p>'; }).join('') +
-      '<div class="actions"><button type="button" class="btn primary" data-act="import-do">Add these events</button><button type="button" class="btn" data-act="import-cancel">Cancel</button></div>';
-  };
-  rd.onerror = function () { box.innerHTML = '<div class="err">That file could not be read.</div>'; };
-  rd.readAsText(file);
-}
-function doImport() {
-  var rm = activeRoom(), r = ui.imp; if (!rm || !r) return;
-  r.events.forEach(function (ev) { put('event', ev.id, Object.assign({}, ev.data, { who: [rm.me], by: rm.me }), false, true); });
-  save(); setStatus('Saving'); scheduleSync(100);
-  ui.imp = null; ui.flash = 'Added ' + r.events.length + (r.events.length === 1 ? ' event' : ' events') + ' to this calendar.';
-  render(); openSettings();
 }
 
 /* a read only look at an event that belongs to another calendar */
@@ -556,14 +554,16 @@ function showCode(code, expiresAt) {
 /* ---------- creating and joining ---------- */
 function afterJoin() {
   if (location.hash.indexOf('join=') >= 0) history.replaceState(null, '', location.pathname + location.search);
-  closeDialog(); S.device.view = S.device.view || 'home'; save(); render(); syncRoom(S.active);
+  closeDialog(); S.device.view = S.device.view || 'home'; save(); render(); syncRoom(S.active); if (T.acctSchedule) T.acctSchedule(300);
 }
-function createRoom(name, me, colour) {
+function createRoom(name, me, colour, solo) {
   return api('/room/create', { body: { name: name } }).then(function (res) {
     var mid = uid();
-    S.rooms.push({ id: res.roomId, key: res.key, feedToken: res.feedToken, me: mid });
+    S.rooms.push({ id: res.roomId, key: res.key, feedToken: res.feedToken, me: mid, at: Date.now() });
+    delete S.goneRooms[res.roomId];
     S.active = res.roomId;
     R(res.roomId).meta = { name: name, v: nextV() };
+    if (solo) put('meta', 'room', { name: name, solo: true }, false, true);
     put('member', mid, { name: me, colour: colour });
     afterJoin();
   });
@@ -579,7 +579,7 @@ function joinWithKey(key) {
   if (existing) {
     /* a link for a calendar already on this device: confirm it, and keep it if the link was replaced */
     return api('/sync', { key: key, body: { since: null, push: [] } }).then(function (res) {
-      existing.key = key; existing.invalid = false; if (res.feedToken) existing.feedToken = res.feedToken;
+      existing.key = key; existing.invalid = false; existing.at = Date.now(); if (res.feedToken) existing.feedToken = res.feedToken;
       S.active = rid; save(); afterJoin();
     });
   }
@@ -593,14 +593,15 @@ function joinWithKey(key) {
     var ids = Object.keys(tmp.members);
     openDialog('<h2>Join ' + esc(tmp.name) + '</h2><p class="note">Who are you? If you are already in this calendar and are opening it on another device, choose your name.</p>' +
       '<div>' + ids.map(function (id) { return '<button type="button" class="listrow" data-act="join-as" data-id="' + esc(id) + '"><span class="dot" style="--c:' + esc(tmp.members[id].colour || C.PALETTE[7]) + '"></span><span class="grow">' + esc(tmp.members[id].name || 'Someone') + '</span></button>'; }).join('') + '</div>' +
-      '<form class="card" id="newpersonform"><h3>I am new here</h3><label class="f">Your name<input type="text" id="np-name" maxlength="40" required></label>' +
+      '<form class="card" id="newpersonform"><h3>I am new here</h3><label class="f">Your name<input type="text" id="np-name" maxlength="40" value="' + esc(T.acctName ? T.acctName() : '') + '" required></label>' +
       '<fieldset><legend>Your colour</legend>' + colourPicker('new', C.PALETTE[ids.length % C.PALETTE.length]) + '</fieldset><div class="err" id="np-err"></div><button class="btn primary block" type="submit">Join calendar</button></form>');
   });
 }
 var pendingJoin = null;
 function finishJoin(meId, isNew, name, colour) {
   var pj = pendingJoin; if (!pj) return;
-  S.rooms.push({ id: pj.rid, key: pj.key, feedToken: pj.res.feedToken, me: meId || uid() });
+  S.rooms.push({ id: pj.rid, key: pj.key, feedToken: pj.res.feedToken, me: meId || uid(), at: Date.now() });
+  delete S.goneRooms[pj.rid];
   var room = S.rooms[S.rooms.length - 1];
   S.active = pj.rid;
   R(pj.rid).meta = { name: pj.tmp.name, v: 1 };
@@ -618,6 +619,7 @@ document.addEventListener('click', function (e) {
   if (e.target.tagName === 'DIALOG') { closeDialog(); return; }
   var t = e.target.closest('[data-act]'); if (!t) return;
   var a = t.dataset.act, rm = activeRoom();
+  for (var hi = 0; hi < T.hooks.click.length; hi++) if (T.hooks.click[hi](a, t, e, rm) === true) return;
   if (a === 'close') closeDialog();
   else if (a === 'rooms') openRooms();
   else if (a === 'settings') openSettings();
@@ -630,7 +632,10 @@ document.addEventListener('click', function (e) {
   else if (a === 'today') { ui.date = today(); render(); }
   else if (a === 'day') openDay(t.dataset.date);
   else if (a === 'add') { closeDialog(); openEvent(null, t.dataset.date || (S.device.view === 'month' || S.device.view === 'week' ? null : today())); }
-  else if (a === 'event') { closeDialog(); if (String(t.dataset.id).indexOf('ov:') === 0) openOverlayEvent(t.dataset.id, t.dataset.date); else openEvent(t.dataset.id, t.dataset.date); }
+  else if (a === 'event') { closeDialog(); if (T.openSheet) T.openSheet(t.dataset.id, t.dataset.date); else if (String(t.dataset.id).indexOf('ov:') === 0) openOverlayEvent(t.dataset.id, t.dataset.date); else openEvent(t.dataset.id, t.dataset.date); }
+  else if (a === 'edit-event') { closeDialog(); openEvent(t.dataset.id, t.dataset.date); }
+  else if (a === 'toggle-optional') { S.device.hideOptional = !S.device.hideOptional; save(); render(); }
+  else if (a === 'toggle-hidden') { ui.showHidden = !ui.showHidden; render(); }
   else if (a === 'rotate-ask') {
     var rb = $('#st-rotate');
     if (rb) rb.innerHTML = '<div class="stack" style="gap:8px"><p class="note"><strong>Replace the link now?</strong> Every other device, including your own other devices, will lose access until it is given the new link. This cannot be undone.</p><div class="actions"><button type="button" class="btn danger" data-act="rotate-do">Replace the link</button><button type="button" class="btn" data-act="rotate-cancel">Keep the current link</button></div><div class="err" id="st-rotate-err"></div></div>';
@@ -639,13 +644,11 @@ document.addEventListener('click', function (e) {
   else if (a === 'rotate-do') {
     t.disabled = true;
     api('/room/rotate', { key: rm.key }).then(function (r) {
-      rm.key = r.key; rm.feedToken = r.feedToken; rm.invalid = false; save();
+      rm.key = r.key; rm.feedToken = r.feedToken; rm.invalid = false; rm.at = Date.now(); save(); if (T.acctSchedule) T.acctSchedule(300);
       ui.flash = 'The invitation link has been replaced. The old link, short codes and subscription address no longer work. Copy the new link below and send it to the people who should keep access.';
       openSettings();
     }).catch(function (err) { t.disabled = false; var el = $('#st-rotate-err'); if (el) el.textContent = err.message || 'The link could not be replaced.'; });
   }
-  else if (a === 'import-do') doImport();
-  else if (a === 'import-cancel') { ui.imp = null; var ib = $('#st-import'); if (ib) ib.innerHTML = ''; var fi = $('#ics-file'); if (fi) fi.value = ''; }
   else if (a === 'toggle-who') t.setAttribute('aria-pressed', t.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
   else if (a === 'toggle-person') {
     var hid = (S.device.hidden[rm.id] || []).slice(), i = hid.indexOf(t.dataset.id);
@@ -675,37 +678,38 @@ document.addEventListener('click', function (e) {
   else if (a === 'switch-room') { S.active = t.dataset.id; save(); closeDialog(); ui.date = today(); render(); syncRoom(S.active); }
   else if (a === 'leave') {
     if (!rm) return;
-    S.rooms = S.rooms.filter(function (r) { return r.id !== rm.id; }); delete S.data[rm.id]; S.active = S.rooms.length ? S.rooms[0].id : null;
-    save(); closeDialog(); render();
+    S.rooms = S.rooms.filter(function (r) { return r.id !== rm.id; }); delete S.data[rm.id]; S.goneRooms[rm.id] = Date.now(); S.active = S.rooms.length ? S.rooms[0].id : null;
+    save(); closeDialog(); render(); if (T.acctSchedule) T.acctSchedule(300);
   }
   else if (a === 'w-edit') { ui.edit = true; render(); }
-  else if (a === 'w-done') { ui.edit = false; save(); render(); }
+  else if (a === 'w-done') { ui.edit = false; widgetsChanged(); render(); }
   else if (a === 'w-add') openGallery();
-  else if (a === 'w-pick') { S.device.widgets.push({ id: 'w' + Date.now(), type: t.dataset.type, size: t.dataset.size, style: t.dataset.style }); ui.edit = true; save(); closeDialog(); render(); }
-  else if (a === 'w-remove') { S.device.widgets.splice(+t.dataset.i, 1); save(); render(); }
+  else if (a === 'w-pick') { S.device.widgets.push({ id: 'w' + Date.now(), type: t.dataset.type, size: t.dataset.size, style: t.dataset.style }); ui.edit = true; widgetsChanged(); closeDialog(); render(); }
+  else if (a === 'w-remove') { S.device.widgets.splice(+t.dataset.i, 1); widgetsChanged(); render(); }
   else if (a === 'w-left' || a === 'w-right') {
     var i2 = +t.dataset.i, j = a === 'w-left' ? i2 - 1 : i2 + 1, ws = S.device.widgets;
-    if (j >= 0 && j < ws.length) { var tmp = ws[i2]; ws[i2] = ws[j]; ws[j] = tmp; save(); render(); }
+    if (j >= 0 && j < ws.length) { var tmp = ws[i2]; ws[i2] = ws[j]; ws[j] = tmp; widgetsChanged(); render(); }
   }
   else if (a === 'join-as') finishJoin(t.dataset.id, false);
 });
 
 document.addEventListener('change', function (e) {
   var el = e.target, rm = activeRoom();
+  for (var hi = 0; hi < T.hooks.change.length; hi++) if (T.hooks.change[hi](el, e, rm) === true) return;
   if (el.id === 'ev-allday') { $('#ev-times').hidden = el.checked; }
   else if (el.id === 'ev-repeat') { $('#ev-untilrow').hidden = el.value === 'none'; }
-  else if (el.id === 'ics-file') { readImport(el.files && el.files[0]); }
   else if (el.dataset.share && rm) { setShare(rm, el); }
   else if (el.id === 'st-name' && rm) { put('meta', 'room', { name: el.value.trim().slice(0, 60) || 'Calendar' }); render(); }
   else if (el.dataset.person && rm) { var m = R(rm.id).members[el.dataset.person]; if (m) { put('member', el.dataset.person, { name: el.value.trim().slice(0, 40) || m.name, colour: m.colour }); render(); } }
   else if (el.dataset.w) {
-    var p = el.dataset.w.split(':'), w = S.device.widgets[+p[0]]; if (w) { w[p[1]] = el.value; save(); render(); }
+    var p = el.dataset.w.split(':'), w = S.device.widgets[+p[0]]; if (w) { w[p[1]] = el.value; widgetsChanged(); render(); }
   }
 });
 
 document.addEventListener('submit', function (e) {
   e.preventDefault();
   var f = e.target, rm = activeRoom();
+  for (var hi = 0; hi < T.hooks.submit.length; hi++) if (T.hooks.submit[hi](f, e, rm) === true) return;
   if (f.id === 'evform' && rm) {
     var who = $$('#ev-who button[aria-pressed="true"]').map(function (b) { return b.dataset.id; });
     var r = C.cleanEvent({
@@ -713,13 +717,15 @@ document.addEventListener('submit', function (e) {
       start: $('#ev-start').value, end: $('#ev-end').value, who: who, repeat: $('#ev-repeat').value, until: $('#ev-until').value,
       place: $('#ev-place').value, notes: $('#ev-notes').value, by: rm.me
     });
+    var prior = f.dataset.id ? R(rm.id).events[f.dataset.id] : null;
+    if (prior && prior.data && !r.error) ['trip', 'att', 'imp', 'impn'].forEach(function (k) { if (prior.data[k]) r.data[k] = prior.data[k]; });
     if (r.error) { $('#ev-err').textContent = r.error; return; }
     put('event', f.dataset.id || uid(), r.data);
     closeDialog(); ui.date = r.data.date; render();
   } else if (f.id === 'createform') {
     var name = $('#cr-name').value.trim(), me = $('#cr-me').value.trim(), col = ($('[data-group="create"][aria-pressed="true"]') || {}).dataset;
     var err = $('#cr-err'); err.textContent = '';
-    createRoom(name, me, col ? col.colour : C.PALETTE[0]).catch(function (x) { err.textContent = x.message || 'The calendar could not be created.'; });
+    createRoom(name, me, col ? col.colour : C.PALETTE[0], $('#cr-solo') && $('#cr-solo').checked).catch(function (x) { err.textContent = x.message || 'The calendar could not be created.'; });
   } else if (f.id === 'joinform') {
     var raw = $('#jn-code').value, jerr = $('#jn-err'); jerr.textContent = '';
     var key = parseKey(raw);
@@ -737,14 +743,26 @@ document.addEventListener('visibilitychange', function () { if (document.visibil
 window.addEventListener('online', function () { if (S.active) syncRoom(S.active); });
 window.addEventListener('offline', function () { setStatus('Offline. Changes are kept on this device.'); });
 setInterval(function () { if (document.visibilityState === 'visible' && S.active) syncRoom(S.active); }, 20000);
+setInterval(function () { if (document.visibilityState === 'visible' && T.acctSync) T.acctSync(); }, 60000);
+
+/* ---------- shared with the account, import and ticket features (features.js) ---------- */
+T.C = C; T.I = window.TandemImport; T.S = S; T.R = R; T.api = api; T.put = put; T.save = save; T.render = render; T.esc = esc; T.uid = uid; T.$ = $; T.$$ = $$;
+T.openDialog = openDialog; T.closeDialog = closeDialog; T.activeRoom = activeRoom; T.members = members; T.memberMap = memberMap; T.eventsList = eventsList;
+T.niceDate = niceDate; T.dayName = dayName; T.today = today; T.ui = ui; T.setStatus = setStatus; T.syncRoom = syncRoom; T.scheduleSync = scheduleSync;
+T.openSettings = openSettings; T.openEvent = openEvent; T.openOverlayEvent = openOverlayEvent; T.createCard = createCard; T.joinCard = joinCard; T.colourPicker = colourPicker;
+T.joinWithKey = joinWithKey; T.createRoom = createRoom; T.ruleList = ruleList; T.occView = occView; T.keepFn = keepFn; T.relDay = relDay; T.DOW = DOW; T.MONTHS = MONTHS; T.DOW3 = DOW3;
+T.nowHM = nowHM; T.parseKey = parseKey; T.afterJoin = afterJoin; T.openRooms = openRooms; T.openNewOrJoin = openNewOrJoin;
+if (window.TandemFeatures) window.TandemFeatures(T);
 
 /* ---------- start ---------- */
 function start() {
   var q = new URLSearchParams(location.search);
+  if (T.start && T.start()) return;
   if (q.get('view') && ['home', 'month', 'week', 'agenda'].indexOf(q.get('view')) >= 0) S.device.view = q.get('view');
   if (S.active && !activeRoom()) S.active = S.rooms[0] ? S.rooms[0].id : null;
   if (!S.active && S.rooms.length) S.active = S.rooms[0].id;
   render();
+  if (T.acctSync) T.acctSync();
   var key = parseKey(location.hash);
   if (key) joinWithKey(key).catch(function (x) { openDialog('<h2>This link could not be used</h2><p class="note">' + esc(x.message || 'The invitation link is not valid.') + '</p><button type="button" class="btn" data-act="close">Close</button>'); });
   else if (S.active) syncRoom(S.active);
