@@ -1,0 +1,22 @@
+{
+  "name": "Tandem",
+  "short_name": "Tandem",
+  "description": "A shared calendar for two people or a small group.",
+  "id": "./",
+  "start_url": "./?source=installed",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F7F8FA",
+  "theme_color": "#F7F8FA",
+  "categories": ["productivity", "lifestyle"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Add an event", "short_name": "Add event", "url": "./?action=add" },
+    { "name": "Home", "short_name": "Home", "url": "./?view=home" }
+  ]
+}

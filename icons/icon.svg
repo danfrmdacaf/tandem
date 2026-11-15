@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tandem">
+  <defs>
+    <clipPath id="a"><circle cx="186.9" cy="256" r="120.3"/></clipPath>
+  </defs>
+  <rect width="512" height="512" fill="rgb(20, 28, 46)"/>
+  <circle cx="186.9" cy="256" r="120.3" fill="rgb(228, 87, 46)"/>
+  <circle cx="325.1" cy="256" r="120.3" fill="rgb(42, 157, 143)"/>
+  <circle cx="325.1" cy="256" r="120.3" fill="rgb(247, 244, 236)" clip-path="url(#a)"/>
+</svg>
