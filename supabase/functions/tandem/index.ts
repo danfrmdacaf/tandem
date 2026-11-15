@@ -47,8 +47,7 @@ async function readJson(req: Request): Promise<Record<string, any>> {
 
 const clean = (s: unknown, n: number) => String(s ?? "").trim().slice(0, n);
 
-async function authRoom(req: Request) {
-  const raw = req.headers.get("x-tandem-key") || "";
+async function authKey(raw: string) {
   const dot = raw.indexOf(".");
   if (dot < 3) return null;
   const id = raw.slice(0, dot);
@@ -58,6 +57,62 @@ async function authRoom(req: Request) {
   if (!data) return null;
   if ((await sha256(secret)) !== data.secret_hash) return null;
   return data;
+}
+
+const authRoom = (req: Request) => authKey(req.headers.get("x-tandem-key") || "");
+
+// helpers used by the overlays and the feed
+const isDate = (s: unknown) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+// ---- overlays: the events of one calendar shown read only on another ----
+const MAX_SHARES_PER_TARGET = 10;
+
+// What leaves the source calendar. In busy mode only the times are sent: the title, place and notes
+// stay on the server and never reach the people looking at the shared calendar.
+function overlayItem(mode: string, id: string, d: any) {
+  if (!d || !isDate(d.date) || !d.title) return null;
+  const o: Record<string, unknown> = { date: d.date, allDay: !!d.allDay };
+  if (isDate(d.endDate) && d.endDate > d.date) o.endDate = d.endDate;
+  if (!d.allDay) {
+    o.start = d.start;
+    o.end = d.end;
+  }
+  if (d.repeat) {
+    o.repeat = d.repeat;
+    if (isDate(d.until)) o.until = d.until;
+  }
+  if (mode === "busy") {
+    o.title = "Busy";
+  } else {
+    o.title = clean(d.title, 120);
+    if (d.place) o.place = clean(d.place, 120);
+  }
+  return { id, data: o };
+}
+
+async function buildOverlays(targetRoom: string, clientTag: string) {
+  const { data: shares } = await db.from("tandem_shares").select("id, source_room, mode, label, by_member").eq("target_room", targetRoom);
+  const list = shares ?? [];
+  const sources: { sh: any; rows: any[] }[] = [];
+  const parts: string[] = [];
+  for (const sh of list) {
+    const { data: rows } = await db.from("tandem_items").select("id, data, deleted, updated_at")
+      .eq("room", sh.source_room).eq("kind", "event").limit(3000);
+    const all = rows ?? [];
+    const latest = all.reduce((m: string, r: any) => (r.updated_at > m ? r.updated_at : m), "");
+    parts.push(`${sh.id}.${sh.mode}.${sh.label}.${sh.by_member}.${all.length}.${latest}`);
+    sources.push({ sh, rows: all });
+  }
+  const tag = parts.join("|");
+  if (tag === clientTag) return { overlays: null, overlayTag: tag };
+  const overlays = sources.map(({ sh, rows }) => ({
+    share: sh.id,
+    label: sh.label,
+    mode: sh.mode,
+    by: sh.by_member,
+    items: rows.filter((r: any) => !r.deleted).map((r: any) => overlayItem(sh.mode, r.id, r.data)).filter(Boolean),
+  }));
+  return { overlays, overlayTag: tag };
 }
 
 // ---- calendar feed (iCalendar) ----
@@ -90,8 +145,6 @@ function addDays(d: string, n: number): string {
   const t = new Date(Date.UTC(y, m - 1, day + n));
   return t.toISOString().slice(0, 10);
 }
-const isDate = (s: unknown) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
-
 function buildFeed(name: string, members: Record<string, string>, events: { id: string; data: any }[]): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
   const L: string[] = [
@@ -204,7 +257,8 @@ Deno.serve(async (req: Request) => {
       if (since) q = q.gt("updated_at", since);
       const { data: rows, error } = await q;
       if (error) throw error;
-      return json({ now: new Date().toISOString(), items: rows ?? [], feedToken: room.feed_token, rejected });
+      const ov = await buildOverlays(room.id, typeof body.overlayTag === "string" ? body.overlayTag : "");
+      return json({ now: new Date().toISOString(), items: rows ?? [], feedToken: room.feed_token, rejected, ...ov });
     }
 
     if (req.method === "POST" && path === "/link/create") {
@@ -226,6 +280,55 @@ Deno.serve(async (req: Request) => {
       if (!data || new Date(data.expires_at).getTime() < Date.now()) return json({ error: "That code is not valid or has expired." }, 404);
       await db.from("tandem_links").delete().eq("code", code);
       return json({ key: data.key });
+    }
+
+    if (req.method === "POST" && path === "/share/create") {
+      const src = await authRoom(req);
+      const body = await readJson(req);
+      const tgt = await authKey(String(body.targetKey ?? ""));
+      if (!src || !tgt) return json({ error: "That calendar key is not valid." }, 401);
+      if (src.id === tgt.id) return json({ error: "A calendar cannot be shown on itself." }, 400);
+      const mode = body.mode === "busy" ? "busy" : "details";
+      const label = clean(body.label, 60) || "Shared calendar";
+      const by = clean(body.by, 64);
+      const { data: existing } = await db.from("tandem_shares").select("id").eq("source_room", src.id).eq("target_room", tgt.id).maybeSingle();
+      if (existing) {
+        const { error } = await db.from("tandem_shares").update({ mode, label, by_member: by }).eq("id", existing.id);
+        if (error) throw error;
+        return json({ id: existing.id });
+      }
+      const { count } = await db.from("tandem_shares").select("id", { count: "exact", head: true }).eq("target_room", tgt.id);
+      if ((count ?? 0) >= MAX_SHARES_PER_TARGET) return json({ error: "That calendar already shows as many other calendars as it can." }, 400);
+      const id = rand(12, ALPHA_ID);
+      const { error } = await db.from("tandem_shares").insert({ id, source_room: src.id, target_room: tgt.id, mode, label, by_member: by });
+      if (error) throw error;
+      return json({ id });
+    }
+
+    if (req.method === "POST" && path === "/share/delete") {
+      const src = await authRoom(req);
+      if (!src) return json({ error: "That calendar key is not valid." }, 401);
+      const body = await readJson(req);
+      await db.from("tandem_shares").delete().eq("source_room", src.id).eq("target_room", clean(body.targetRoom, 40));
+      return json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/share/list") {
+      const src = await authRoom(req);
+      if (!src) return json({ error: "That calendar key is not valid." }, 401);
+      const { data } = await db.from("tandem_shares").select("id, target_room, mode, label, by_member").eq("source_room", src.id);
+      return json({ shares: data ?? [] });
+    }
+
+    if (req.method === "POST" && path === "/room/rotate") {
+      const room = await authRoom(req);
+      if (!room) return json({ error: "That calendar key is not valid." }, 401);
+      const secret = rand(28, ALPHA_KEY);
+      const feed = rand(28, ALPHA_KEY);
+      const { error } = await db.from("tandem_rooms").update({ secret_hash: await sha256(secret), feed_token: feed }).eq("id", room.id);
+      if (error) throw error;
+      await db.from("tandem_links").delete().eq("room", room.id);
+      return json({ key: `${room.id}.${secret}`, feedToken: feed });
     }
 
     const m = path.match(/^\/feed\/([a-z0-9]+)\/([A-Za-z0-9]+)\.ics$/);
