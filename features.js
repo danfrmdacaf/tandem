@@ -118,6 +118,13 @@ T.acctSync = function () {
     if (e && e.status === 401) { S.account = null; T.save(); ui.authMsg = 'You have been signed out. Please sign in again to keep your calendars up to date on this device.'; ui.authTab = 'signin'; T.render(); }
   });
 };
+function showRecovery(code, intro) {
+  ui.rc = code;
+  T.openDialog('<h2>Save your recovery code</h2><div class="stack"><p class="note">' + esc(intro) + '</p><div class="code" style="font-size:19px;letter-spacing:0.06em">' + esc(code) + '</div>' +
+    '<div class="actions"><button type="button" class="btn" data-act="rc-copy">Copy the code</button><button type="button" class="btn" data-act="rc-download">Download it as a file</button></div>' +
+    '<p class="note">Anyone with this code and your email address can choose a new password for your account, so keep it private. It works for one reset, and a fresh code is given each time it is used. You can make a new one at any time in Settings.</p>' +
+    '<label class="chk"><input type="checkbox" id="rc-ok"> I have saved this code somewhere safe</label><button type="button" class="btn primary block" id="rc-done" data-act="rc-done" disabled>Continue</button></div>');
+}
 function onAuth(res, keepDialog) {
   S.account = { token: res.token, email: res.account.email, name: res.account.name };
   ui.authMsg = '';
@@ -127,18 +134,19 @@ function onAuth(res, keepDialog) {
   T.render();
   T.acctSync();
   if (S.active) T.syncRoom(S.active).then(function () { syncAdded(r.added); });
+  if (res.recovery) showRecovery(res.recovery, res.fromRecovery ? 'Your password has been changed and you are signed in. Here is a new recovery code to replace the one you just used.' : 'Your account is ready. Please keep this recovery code. If you ever forget your password, it is how you choose a new one.');
 }
 function signOutLocal() {
   var keepView = S.device.view;
   Object.keys(S).forEach(function (k) { delete S[k]; });
   S.rooms = []; S.active = null; S.data = {}; S.rules = {}; S.goneRooms = {}; S.account = null;
-  S.device = { view: keepView || 'home', widgets: [], widgetsAt: 0, hidden: {}, hideOptional: false };
+  S.device = { view: keepView || 'month', cal: 'month', widgets: [], widgetsAt: 0, hidden: {}, hideOptional: false };
   S.device.widgets = defaultWidgetsCopy();
   T.save();
 }
 function defaultWidgetsCopy() {
-  return [{ id: 'w1', type: 'today', size: 'm', style: 'plain' }, { id: 'w2', type: 'countdown', size: 's', style: 'bold' }, { id: 'w3', type: 'next', size: 's', style: 'outline' },
-    { id: 'w4', type: 'week', size: 'l', style: 'plain' }, { id: 'w5', type: 'free', size: 'm', style: 'plain' }, { id: 'w6', type: 'month', size: 'l', style: 'outline' }];
+  return [{ id: 'w1', type: 'today', size: 'm', style: 'plain' }, { id: 'w2', type: 'countdown', size: 's', style: 'plain' }, { id: 'w3', type: 'next', size: 's', style: 'plain' },
+    { id: 'w4', type: 'week', size: 'l', style: 'plain' }, { id: 'w5', type: 'free', size: 'm', style: 'plain' }, { id: 'w6', type: 'month', size: 'l', style: 'plain' }];
 }
 
 /* the sign in and sign up forms, used on the first page and inside a dialog */
@@ -152,11 +160,16 @@ function authHtml() {
     body = '<form class="stack" id="signupform" data-form="signup"><label class="f">Your name<input type="text" name="name" autocomplete="name" maxlength="40" required></label>' +
       '<label class="f">Email address<input type="email" name="email" autocomplete="email" maxlength="254" required></label>' + pwField('password', 'Password, at least eight characters', 'new-password') +
       '<label class="chk"><input type="checkbox" data-showpw> Show the password</label><div class="err" data-err></div><button class="btn primary block" type="submit">Create account</button></form>' +
-      '<p class="note">An account keeps your calendars, your Home page and your preferences, so they are there on every device you sign in on.</p>';
+      '<p class="note">An account keeps your calendars, your Home page and your preferences, so they are there on every device you sign in on. You will be given a recovery code to keep, which lets you choose a new password if you ever forget it.</p>';
   } else if (tab === 'forgot') {
-    body = '<form class="stack" id="forgotform" data-form="forgot"><p class="note">Enter the email address of your account and we will send you a link to choose a new password.</p>' +
+    body = '<form class="stack" id="recoverform" data-form="recover"><p class="note">Enter the email address of your account, the recovery code you saved when you created it, and a new password.</p>' +
+      '<label class="f">Email address<input type="email" name="email" autocomplete="email" maxlength="254" required></label>' +
+      '<label class="f">Recovery code<input type="text" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="30" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" required></label>' +
+      pwField('password', 'New password, at least eight characters', 'new-password') + '<label class="chk"><input type="checkbox" data-showpw> Show the password</label>' +
+      '<div class="err" data-err></div><button class="btn primary block" type="submit">Set the new password</button><button type="button" class="btn block" data-act="auth-tab" data-tab="signin">Back to sign in</button></form>' +
+      '<details class="disc"><summary>I do not have my recovery code</summary><form class="stack" id="forgotform" data-form="forgot"><p class="note">If reset emails have been switched on for Tandem, enter your email address and a link to choose a new password will be sent. If they have not, nothing is sent and you will be told.</p>' +
       '<label class="f">Email address<input type="email" name="email" autocomplete="email" maxlength="254" required></label><div class="err" data-err></div><div class="notice" data-ok hidden></div>' +
-      '<button class="btn primary block" type="submit">Send the reset link</button><button type="button" class="btn block" data-act="auth-tab" data-tab="signin">Back to sign in</button></form>';
+      '<button class="btn block" type="submit">Email me a reset link</button></form></details>';
   } else {
     body = '<form class="stack" id="signinform" data-form="signin"><label class="f">Email address<input type="email" name="email" autocomplete="email" maxlength="254" required></label>' +
       pwField('password', 'Password', 'current-password') + '<label class="chk"><input type="checkbox" data-showpw> Show the password</label><div class="err" data-err></div>' +
@@ -189,6 +202,7 @@ function authSection() {
   return '<div class="sect"><h3>Account</h3><p class="note">Signed in as <strong>' + esc(S.account.email) + '</strong>. Your calendars, Home page and preferences are saved to this account.</p>' +
     '<form class="stack" data-form="rename" style="gap:8px"><label class="f">Your name<input type="text" name="name" maxlength="40" value="' + esc(S.account.name) + '" required></label><div class="err" data-err></div><div class="actions"><button type="submit" class="btn">Save name</button></div></form>' +
     '<details class="disc"><summary>Change password</summary><form class="stack" data-form="password" style="gap:8px">' + pwField('current', 'Current password', 'current-password') + pwField('next', 'New password, at least eight characters', 'new-password') + '<div class="err" data-err></div><div class="notice" data-ok hidden></div><div class="actions"><button type="submit" class="btn">Change password</button></div></form></details>' +
+    '<details class="disc"><summary>Recovery code</summary><form class="stack" data-form="newrecovery" style="gap:8px"><p class="note">Your recovery code lets you choose a new password if you forget it. If you have lost it or want a fresh one, make a new code. The old one stops working. Please enter your password to confirm.</p>' + pwField('password', 'Password', 'current-password') + '<div class="err" data-err></div><div class="actions"><button type="submit" class="btn">Make a new recovery code</button></div></form></details>' +
     '<div id="st-signout" class="actions"><button type="button" class="btn" data-act="signout-ask">Sign out</button></div>' +
     '<details class="disc"><summary>Delete my account</summary><form class="stack" data-form="delete" style="gap:8px"><p class="note">This removes your account, your saved ticket files and your preferences. The calendars themselves are not deleted and stay available to everyone who has their link. Please enter your password to confirm.</p>' + pwField('password', 'Password', 'current-password') + '<div class="err" data-err></div><div class="actions"><button type="submit" class="btn danger">Delete my account</button></div></form></details></div>';
 }
@@ -219,9 +233,21 @@ T.hooks.submit.push(function (f) {
     api('/auth/reset/request', { body: { email: el.email.value } }).then(function (r) {
       busy(f, false);
       var ok = f.querySelector('[data-ok]');
-      ok.textContent = r.mail ? 'If an account uses that email address, a link to choose a new password is on its way. It works once and expires after one hour. Please check your spam folder too.' : 'Password reset emails are not switched on yet, so nothing was sent. Please contact Daniel Chidi at Adachi Industries.';
+      ok.textContent = r.mail ? 'If an account uses that email address, a link to choose a new password is on its way. It works once and expires after one hour. Please check your spam folder too.' : 'Reset emails are not switched on, so nothing was sent. Please use your recovery code instead.';
       ok.hidden = false;
     }).catch(function (e) { busy(f, false); formErr(f, e.message); });
+    return true;
+  }
+  else if (kind === 'recover') {
+    busy(f, true);
+    api('/auth/recovery/confirm', { body: { email: el.email.value, code: el.code.value, password: el.password.value } }).then(function (res) { busy(f, false); res.fromRecovery = true; onAuth(res); })
+      .catch(function (e) { busy(f, false); formErr(f, e.message); });
+    return true;
+  }
+  else if (kind === 'newrecovery') {
+    busy(f, true);
+    api('/auth/recovery/new', { token: S.account.token, body: { password: el.password.value } }).then(function (res) { busy(f, false); showRecovery(res.recovery, 'This is your new recovery code. The old one no longer works.'); })
+      .catch(function (e) { busy(f, false); formErr(f, e.message); });
     return true;
   }
   else if (kind === 'reset') { path = '/auth/reset/confirm'; body = { token: ui.resetToken, password: el.password.value }; }
@@ -247,10 +273,18 @@ T.hooks.submit.push(function (f) {
   return true;
 });
 T.hooks.change.push(function (el) {
+  if (el.id === 'rc-ok') { var b = $('#rc-done'); if (b) b.disabled = !el.checked; return true; }
   if (el.dataset && el.dataset.showpw !== undefined) { $$('input[type="password"],input[data-pw]', el.closest('form')).forEach(function (i) { i.setAttribute('data-pw', '1'); i.type = el.checked ? 'text' : 'password'; }); return true; }
   return false;
 });
 T.hooks.click.push(function (a, t) {
+  if (a === 'rc-copy') { if (navigator.clipboard && ui.rc) navigator.clipboard.writeText(ui.rc).then(function () { t.textContent = 'Copied'; }, function () { t.textContent = 'Select the code and copy it'; }); return true; }
+  if (a === 'rc-download') {
+    var blob = new Blob(['Tandem recovery code\n' + (S.account ? S.account.email : '') + '\n\n' + ui.rc + '\n\nKeep this private. With this code and your email address, a new password can be chosen for your Tandem account.\n'], { type: 'text/plain' }), url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = 'tandem-recovery-code.txt'; document.body.appendChild(link); link.click(); link.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+    return true;
+  }
+  if (a === 'rc-done') { ui.rc = null; T.closeDialog(); return true; }
   if (a === 'auth-tab') { ui.authTab = t.dataset.tab; ui.authMsg = ''; var card = t.closest('.card'); if (card && card.parentNode) { var tmp = document.createElement('div'); tmp.innerHTML = authHtml(); card.parentNode.replaceChild(tmp.firstChild, card); } return true; }
   if (a === 'auth-open') { openAuthDialog(t.dataset.tab); return true; }
   if (a === 'signout-ask') {

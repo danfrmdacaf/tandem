@@ -349,6 +349,14 @@ Tandem, built by Daniel Chidi, Founder, Adachi Industries.`;
 const safeName = (s: unknown) => clean(s, 40).replace(/[\u0000-\u001f<>]/g, "");
 const session = (a: any) => ({ email: a.email, name: a.name });
 
+// A recovery code is twenty random characters, shown to the person once as four groups of five. It has about
+// a hundred bits of randomness, so a plain hash is enough to store it.
+function newRecovery(): { code: string; display: string } {
+  const code = rand(20, ALPHA_CODE);
+  return { code, display: code.match(/.{5}/g)!.join("-") };
+}
+const normRecovery = (s: string) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 40);
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   try {
@@ -508,11 +516,12 @@ Deno.serve(async (req: Request) => {
       if (ex) return json({ error: "An account with that email address already exists. Try signing in, or reset the password." }, 409);
       const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
       const id = rand(16, ALPHA_ID);
-      const { error } = await db.from("tandem_accounts").insert({ id, email, name, pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(pw, salt, PW_ITER) });
+      const rec = newRecovery();
+      const { error } = await db.from("tandem_accounts").insert({ id, email, name, pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(pw, salt, PW_ITER), recovery_hash: await sha256(rec.code) });
       if (error) return json({ error: "An account with that email address already exists." }, 409);
       await note("signup:" + ip);
       const token = await startSession(id, req);
-      return json({ token, account: { email, name }, profile: {} });
+      return json({ token, account: { email, name }, profile: {}, recovery: rec.display });
     }
 
     if (req.method === "POST" && path === "/auth/login") {
@@ -598,6 +607,48 @@ Deno.serve(async (req: Request) => {
       }
       await db.from("tandem_accounts").delete().eq("id", a.id);
       return json({ ok: true });
+    }
+
+    if (req.method === "POST" && path === "/auth/recovery/new") {
+      const a = await authAccount(req);
+      if (!a) return json({ error: "Please sign in again." }, 401);
+      const body = await readJson(req);
+      if ((await attempts("login:" + a.email, 900000)) >= 8) return json({ error: "Too many attempts. Please wait a few minutes, then try again." }, 429);
+      const { data: row } = await db.from("tandem_accounts").select("pw_hash, pw_salt, pw_iter").eq("id", a.id).single();
+      if (!row || !sameText(await derive(String(body.password ?? "").slice(0, 200), row.pw_salt, row.pw_iter), row.pw_hash)) {
+        await note("login:" + a.email);
+        return json({ error: "The password is not correct." }, 401);
+      }
+      const rec = newRecovery();
+      await db.from("tandem_accounts").update({ recovery_hash: await sha256(rec.code), updated_at: new Date().toISOString() }).eq("id", a.id);
+      return json({ recovery: rec.display });
+    }
+
+    if (req.method === "POST" && path === "/auth/recovery/confirm") {
+      const body = await readJson(req);
+      const email = clean(body.email, 254).toLowerCase();
+      const code = normRecovery(body.code);
+      const ip = ipOf(req);
+      const wrong = "That email address and recovery code do not match. Please check both and try again.";
+      if (!EMAIL_RE.test(email) || code.length !== 20) return json({ error: wrong }, 400);
+      if ((await attempts("recov:" + email, 3600000)) >= 6 || (await attempts("recovip:" + ip, 3600000)) >= 30) {
+        return json({ error: "Too many attempts. Please wait an hour, then try again." }, 429);
+      }
+      const { data: a } = await db.from("tandem_accounts").select("id, email, name, profile, recovery_hash").eq("email", email).maybeSingle();
+      // the same work and the same answer whether or not the account exists
+      const ok = !!a && !!a.recovery_hash && sameText(await sha256(code), a.recovery_hash);
+      if (!ok) { await note("recov:" + email); await note("recovip:" + ip); return json({ error: wrong }, 400); }
+      const pw = String(body.password ?? "");
+      const bad = passwordProblem(pw, a!.email);
+      if (bad) return json({ error: bad }, 400);
+      const rec = newRecovery();
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      await db.from("tandem_accounts").update({ pw_salt: salt, pw_iter: PW_ITER, pw_hash: await derive(pw, salt, PW_ITER), recovery_hash: await sha256(rec.code), updated_at: new Date().toISOString() }).eq("id", a!.id);
+      await db.from("tandem_resets").delete().eq("account", a!.id);
+      await db.from("tandem_sessions").delete().eq("account", a!.id);
+      await db.from("tandem_attempts").delete().eq("k", "recov:" + email);
+      const t = await startSession(a!.id, req);
+      return json({ token: t, account: session(a), profile: a!.profile || {}, recovery: rec.display });
     }
 
     if (req.method === "POST" && path === "/auth/reset/request") {

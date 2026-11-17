@@ -50,14 +50,14 @@ var LS_KEY = 'tandem.v1';
 function defaultWidgets() {
   return [
     { id: 'w1', type: 'today', size: 'm', style: 'plain' },
-    { id: 'w2', type: 'countdown', size: 's', style: 'bold' },
-    { id: 'w3', type: 'next', size: 's', style: 'outline' },
+    { id: 'w2', type: 'countdown', size: 's', style: 'plain' },
+    { id: 'w3', type: 'next', size: 's', style: 'plain' },
     { id: 'w4', type: 'week', size: 'l', style: 'plain' },
     { id: 'w5', type: 'free', size: 'm', style: 'plain' },
-    { id: 'w6', type: 'month', size: 'l', style: 'outline' }
+    { id: 'w6', type: 'month', size: 'l', style: 'plain' }
   ];
 }
-function blank() { return { rooms: [], active: null, data: {}, rules: {}, goneRooms: {}, account: null, device: { view: 'home', widgets: defaultWidgets(), widgetsAt: 0, hidden: {}, hideOptional: false } }; }
+function blank() { return { rooms: [], active: null, data: {}, rules: {}, goneRooms: {}, account: null, device: { view: 'month', cal: 'month', widgets: defaultWidgets(), widgetsAt: 0, hidden: {}, hideOptional: false } }; }
 function load() {
   try {
     var j = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
@@ -489,6 +489,7 @@ function render() {
   else if (v === 'agenda') h += viewAgenda();
   else {
     var panel = v === 'month' || (v === 'week' && wide());
+    h += T.startCard ? T.startCard() : '';
     h += '<div class="layout' + (panel ? '' : ' solo') + '"><div class="main">' + (v === 'month' ? viewMonth() : v === 'week' ? viewWeek() : viewDay()) + '</div>' +
       (panel ? '<aside class="aside">' + dayPanel() + (T.quickCard ? T.quickCard() : '') + '</aside>' : '') + '</div>';
   }

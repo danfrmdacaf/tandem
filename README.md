@@ -71,7 +71,11 @@ Reminders use web push, the standard that lets a website send a notification whe
 - **Private by design.** The signing key and the scheduler secret sit in the `tandem_config` table, which only the server can read. The only part in this repository is the public half of the key. The server accepts push addresses only from the push services of Apple, Google, Mozilla and Microsoft.
 - **Time zones.** Events are written as wall clock times, so each device tells the server its own time zone, and a reminder is worked out in that zone.
 
-## Setting up the email that sends reset links
+## Forgotten passwords: the recovery code
+
+Nothing needs to be set up for this. When an account is created, Tandem shows a recovery code once, as four groups of five characters. It can be copied or downloaded. If the password is forgotten, the email address, the recovery code and a new password are entered on the sign in page, and the person is signed in. Each use gives a new code. A new code can be made at any time in Settings with the password. Only a hash of the code is stored, attempts are limited, and the answer is the same whether or not the account exists.
+
+## Setting up the email that sends reset links (optional)
 
 Tandem sends mail through Resend (https://resend.com). It is optional: without it everything else works and the reset page says that email is not switched on.
 
