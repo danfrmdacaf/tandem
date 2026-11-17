@@ -1,7 +1,7 @@
 /* Tandem service worker. It keeps the application available without a connection. Calendar data is
    stored on the device by the application itself and is never cached here. */
-const CACHE = 'tandem-v5';
-const ASSETS = ['./', 'index.html', 'styles.css', 'core.js', 'importer.js', 'features.js', 'shell.js', 'app.js', 'config.js', 'manifest.webmanifest',
+const CACHE = 'tandem-v6';
+const ASSETS = ['./', 'index.html', 'styles.css', 'core.js', 'importer.js', 'features.js', 'shell.js', 'assistant.js', 'otter.js', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
 self.addEventListener('install', (e) => {

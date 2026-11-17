@@ -464,7 +464,7 @@ function joinCard() {
 /* ---------- main render ---------- */
 function render() {
   var app = $('#app'), rm = activeRoom();
-  if (!rm) { app.innerHTML = (T.banner ? T.banner() : '') + viewWelcome(); document.title = 'Tandem'; return; }
+  if (!rm) { app.innerHTML = (T.banner ? T.banner() : '') + viewWelcome(); document.title = 'Tandem'; if (T.onRender) T.onRender(); return; }
   var d = R(rm.id), v = S.device.view, name = d.meta.name || 'Calendar';
   if (['home', 'month', 'week', 'day', 'agenda'].indexOf(v) < 0) v = S.device.view = 'home';
   var cal = isCalView(v), tab = cal ? 'calendar' : v;
@@ -501,6 +501,7 @@ function render() {
   var y = window.scrollY;
   app.innerHTML = h;
   window.scrollTo(0, y);
+  if (T.onRender) T.onRender();
 }
 
 /* ---------- dialogs ---------- */
@@ -869,6 +870,7 @@ T.joinWithKey = joinWithKey; T.createRoom = createRoom; T.ruleList = ruleList; T
 T.nowHM = nowHM; T.ICON = ICON; T.wide = wide; T.parseKey = parseKey; T.afterJoin = afterJoin; T.openRooms = openRooms; T.openNewOrJoin = openNewOrJoin;
 if (window.TandemFeatures) window.TandemFeatures(T);
 if (window.TandemShell) window.TandemShell(T);
+if (window.TandemOtter) window.TandemOtter(T);
 
 /* ---------- start ---------- */
 function start() {

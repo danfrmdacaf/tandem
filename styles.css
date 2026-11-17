@@ -334,3 +334,51 @@ button.chip { border: 0; text-align: left; width: 100%; padding: 0; cursor: poin
 .inl { display: inline-grid; place-items: center; vertical-align: -5px; width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--sub); }
 .inl svg { width: 15px; height: 15px; }
 .listrow .tt { font-weight: 500; }
+
+/* Otto the otter and the chat window */
+.otter { position: fixed; right: 18px; bottom: 0; z-index: 6; width: 96px; }
+.ot-btn { display: block; width: 96px; height: 92px; padding: 0; border: 0; background: none; border-radius: 28px 28px 0 0; cursor: pointer; overflow: visible; }
+.ot-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ot-svg { display: block; width: 96px; height: 92px; overflow: visible; transition: transform 0.22s ease; transform-origin: 50% 100%; }
+.ot-btn:hover .ot-svg { transform: translateY(-5px) rotate(-3deg); }
+.ot-lid { transform-box: fill-box; transform-origin: 50% 0; transform: scaleY(0); transition: transform 0.06s linear; }
+.ot-svg.blink .ot-lid { transform: scaleY(1); }
+.ot-glad { display: none; }
+.ot-svg.glad .ot-eyes { display: none; }
+.ot-svg.glad .ot-glad { display: inline; }
+.ot-scarf { transform-box: fill-box; transform-origin: 50% 0; }
+.ot-btn:hover .ot-scarf { animation: ot-sway 0.7s ease-in-out; }
+.ot-btn.hop .ot-svg { animation: ot-hop 0.45s ease-out; }
+@keyframes ot-hop { 0% { transform: translateY(0); } 35% { transform: translateY(-14px); } 70% { transform: translateY(2px); } 100% { transform: translateY(0); } }
+@keyframes ot-sway { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(5deg); } 65% { transform: rotate(-4deg); } }
+.ot-tip { position: absolute; right: 78px; bottom: 54px; width: max-content; max-width: 220px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px 12px 4px 12px; padding: 8px 12px; font-size: 14px; }
+.ot-panel { position: fixed; right: 18px; bottom: 104px; z-index: 7; width: min(392px, calc(100vw - 24px)); height: min(560px, calc(100vh - 140px)); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 36px rgba(8, 10, 14, 0.28); overflow: hidden; }
+.ot-panel[hidden] { display: none; }
+.ot-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 10px 14px; border-bottom: 1px solid var(--line); }
+.ot-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.ot-title b { font-size: 16px; }
+.ot-set { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; max-height: 60%; overflow: auto; }
+.ot-log { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.ot-msg { max-width: 88%; padding: 9px 12px; border-radius: 12px; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.ot-msg.bot { align-self: flex-start; background: var(--sub); border-bottom-left-radius: 4px; }
+.ot-msg.user { align-self: flex-end; background: var(--accent-soft); border-bottom-right-radius: 4px; }
+.ot-day { margin-top: 8px; font-size: 13px; }
+.ot-day b { display: block; font-weight: 600; }
+.ot-day div + div { color: var(--mute); }
+.ot-card { margin-top: 8px; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ot-ev .tt { font-weight: 600; }
+.ot-typing { display: flex; gap: 4px; align-items: center; padding: 12px 14px; }
+.ot-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--mute); animation: ot-dot 1s infinite ease-in-out; }
+.ot-typing i:nth-child(2) { animation-delay: 0.15s; } .ot-typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ot-dot { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
+.ot-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 14px 10px; }
+.ot-chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; font-size: 13px; color: var(--ink); }
+.ot-chip:hover { background: var(--sub); }
+.ot-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.ot-form input { flex: 1; }
+@media (max-width: 719px) {
+  .otter { right: 10px; bottom: calc(58px + env(safe-area-inset-bottom, 0px)); }
+  .ot-panel { right: 8px; left: 8px; width: auto; bottom: calc(64px + env(safe-area-inset-bottom, 0px)); height: min(70vh, 560px); }
+  .ot-tip { right: 70px; }
+}
+@media (prefers-reduced-motion: reduce) { .ot-svg, .ot-lid { transition: none; } .ot-btn:hover .ot-svg { transform: none; } .ot-btn:hover .ot-scarf, .ot-btn.hop .ot-svg, .ot-typing i { animation: none; } }

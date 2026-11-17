@@ -210,6 +210,137 @@
     return { rows: seq, aligned: aligned, lines: seq.map(function (r) { return r.join('  '); }) };
   }
 
+
+  /* ---------- weekly grid PDFs, such as the TimeEdit timetable export ----------
+     Each week is a column and each class is a box. A box carries its start time at one edge and its end time at the
+     other, with the weekday, room, course and teacher written inside. Reading it as lines of text mixes the boxes
+     together, so this reads the boxes. It returns null when the page does not look like this, and the ordinary
+     table reader is used instead. */
+  var STOP_WORDS = { of: 1, and: 1, the: 1, in: 1, to: 1, for: 1, a: 1, an: 1, on: 1, at: 1, with: 1, by: 1, or: 1 };
+  var TYPE_RE = /^(lecture|tutorial|lab|seminar|workshop|practical|supervision|exam|examination|induction|class|drop-in|surgery)s?$/i;
+  function titleCase(s) { return s.replace(/\b([A-Z])([A-Z]+)\b/g, function (m, a, b) { return m.length > 3 || /^[A-Z]+$/.test(m) ? a + b.toLowerCase() : m; }); }
+  /* the lines of one box become one string, mending words that were broken at the edge of the box */
+  function joinStream(lines) {
+    var out = '', prev = null;
+    lines.forEach(function (ln) {
+      if (prev) {
+        var first = ln.t.split(' ')[0], full = prev.w >= prev.lane * 0.78, last = prev.t[prev.t.length - 1];
+        var fragment = /^[a-z]/.test(first) && !STOP_WORDS[first.toLowerCase()];
+        var capFrag = /^[A-Z]$/.test(first) && /^[^a-z]+$/.test(prev.t) && prev.t.length > 6;
+        out += (last === '-' || (full && /[A-Za-z]$/.test(prev.t) && (fragment || capFrag))) ? '' : ' ';
+      }
+      out += ln.t; prev = ln;
+    });
+    return out;
+  }
+  function gridFromPages(pages) {
+    var DOWS = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 }, header = null, events = [], boxes = 0;
+    pages.forEach(function (raw) {
+      var items = raw.map(function (it) { return { s: clean(it.s), x: it.x, y: it.y, w: it.w || 0 }; }).filter(function (it) { return it.s; });
+      items.forEach(function (it) {
+        if (!header) { var m = /(\d{1,2})\/(\d{1,2})\/(\d{4})\s*-\s*\d{1,2}\/\d{1,2}\/\d{4}\s+(\d{1,2})\s*-\s*\d{1,2}\b/.exec(it.s); if (m) header = { y: +m[3], m: +m[2], d: +m[1], w0: +m[4] }; }
+      });
+      if (!header) return;
+      var times = items.filter(function (it) { return /^\d{1,2}:\d{2}$/.test(it.s); });
+      var days = items.filter(function (it) { return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(it.s); });
+      if (times.length < 2 || !days.length) return;
+      var found = [];
+      times.forEach(function (S) {
+        var cands = days.filter(function (d) { return d.x >= S.x + 5 && d.x <= S.x + 16 && d.y + d.w / 2 > S.y; });
+        if (!cands.length) return;
+        cands.sort(function (a, b) { return (a.y + a.w / 2) - (b.y + b.w / 2); });
+        var W = cands[0], c = W.y + W.w / 2, h = c - S.y;
+        if (h < 8 || h > 80) return;
+        var R = c + h, E = null;
+        times.forEach(function (T) {
+          if (T.x > S.x + 20 && Math.abs(T.y + T.w - R) <= 3 && T.s > S.s.padStart(5, '0') && (!E || T.x < E.x)) E = T;
+        });
+        if (!E) return;
+        found.push({ S: S, E: E, W: W, y0: S.y, y1: R, lane: R - S.y });
+      });
+      if (!found.length) return;
+      /* the week numbers sit beside the bands of boxes */
+      var ints = items.filter(function (it) { return /^\d{1,2}$/.test(it.s); });
+      var axis = {};
+      ints.forEach(function (a) { if (ints.filter(function (b) { return Math.abs(b.y - a.y) <= 4 && Math.abs(b.x - a.x) > 8; }).length >= 2) axis[ints.indexOf(a)] = 1; });
+      var weekLabels = items.filter(function (it) {
+        if (!/^\d{1,2}$/.test(it.s) || axis[ints.indexOf(it)]) return false;
+        var c = it.y + it.w / 2;
+        return found.some(function (f) { return Math.abs((f.y0 + f.y1) / 2 - c) < 90; }) && it.x < Math.min.apply(null, found.map(function (f) { return f.S.x; }));
+      });
+      if (!weekLabels.length) return;
+      found.forEach(function (f) {
+        var mid = (f.y0 + f.y1) / 2, wl = null, best = 1e9;
+        weekLabels.forEach(function (l) { var d = Math.abs(l.y + l.w / 2 - mid); if (d < best) { best = d; wl = l; } });
+        if (!wl || best > 80) return;
+        var inside = items.filter(function (it) {
+          var c = it.y + it.w / 2;
+          return it !== f.S && it !== f.E && it !== f.W && it.x > f.S.x && it.x < f.E.x && c > f.y0 - 1 && c < f.y1 + 1 && !/^\d{1,2}:\d{2}$/.test(it.s) && !(/^\d{1,2}$/.test(it.s) && it.x < f.S.x);
+        }).sort(function (a, b) { return a.x - b.x || a.y - b.y; });
+        var lines = inside.map(function (it) { return { t: it.s, w: it.w, lane: f.lane }; });
+        var week = +wl.s, dow = DOWS[f.W.s.toLowerCase()];
+        var base = C.add(C.monday(header.y + '-' + pad(header.m) + '-' + pad(header.d)), (week - header.w0) * 7 + dow);
+        boxes++;
+        events.push({ date: base, start: pad(+f.S.s.split(':')[0]) + ':' + f.S.s.split(':')[1], end: pad(+f.E.s.split(':')[0]) + ':' + f.E.s.split(':')[1], lane: f.lane, lines: lines });
+      });
+    });
+    if (boxes < 3) return null;
+    var CODE_RE = /\b(\d{4,5}-\d{3,4})\b/;
+    /* words from the wide boxes, used to mend words that were split in the narrow ones */
+    var vocab = {};
+    events.forEach(function (e) { if (e.lane >= 40) clean(joinStream(e.lines)).split(' ').forEach(function (w) { if (w.length >= 5 && /^[A-Za-z]+$/.test(w)) vocab[w.toLowerCase()] = 1; }); });
+    function mend(str) {
+      var t = str.split(' '), out = [];
+      for (var i = 0; i < t.length; i++) {
+        var done = false;
+        for (var k = Math.min(4, t.length - i); k >= 2 && !done; k--) {
+          var cat = t.slice(i, i + k).join('');
+          if (/^[A-Za-z]+$/.test(cat) && vocab[cat.toLowerCase()] && !t.slice(i, i + k).some(function (x) { return vocab[x.toLowerCase()]; })) { out.push(cat); i += k - 1; done = true; }
+        }
+        if (!done) out.push(t[i]);
+      }
+      return out.join(' ');
+    }
+    var parsed = events.map(function (e) {
+      var whole = clean(joinStream(e.lines)), place = '', rm = /^([A-Za-z]{1,4}\s[A-Z]{1,6}\d{1,4}\s?[a-z]?(?:\s\([A-Za-z0-9 ]{1,8}\))?)(?=\s|$)/.exec(whole);
+      if (rm) { place = rm[1].replace(/(\d)\s([a-z])$/, '$1$2'); whole = clean(whole.slice(rm[0].length)); }
+      var txt = mend(whole), type = '', pre = '', post = txt;
+      var m = /(?:^|\s)(lecture|tutorial|seminar|workshop|practical|supervision|exam|examination|induction|class)(?=\s|$)/i.exec(txt) || /(?:^|\s)(lab)(?=\s|$)/i.exec(txt);
+      if (m) { var at = m.index + m[0].indexOf(m[1]); type = m[1]; pre = clean(txt.slice(0, at)); post = clean(txt.slice(at + m[1].length)); }
+      var code = '', course = post, person = '', cm = CODE_RE.exec(post);
+      if (cm) { code = cm[1]; course = clean(post.slice(0, cm.index)); person = clean(post.slice(cm.index + cm[1].length)); }
+      return { e: e, place: place, type: type, pre: pre, course: course, code: code, person: person, cut: !code && !!type && course.split(' ').length < 2 && course.length > 0 };
+    });
+    /* a box that is too short to hold the whole course name is completed from a longer one in the same file */
+    var known = {};
+    parsed.forEach(function (p) { if (p.code && p.course.length > 6) known[p.course] = p.code; });
+    parsed.forEach(function (p) {
+      if (p.code || p.course.length < 5) return;
+      var hit = Object.keys(known).filter(function (k) { return k.toLowerCase().indexOf(p.course.toLowerCase()) === 0; });
+      if (hit.length === 1) { p.course = hit[0]; p.code = known[hit[0]]; }
+    });
+    var out = parsed.map(function (p) {
+      var base = p.course || clean(p.pre + ' ' + p.type) || 'Class';
+      var title = p.course && p.type ? p.course + ' ' + p.type.toLowerCase() : base;
+      if (/^[^a-z]+$/.test(title)) title = titleCase(title);
+      var notes = [p.course && p.pre ? titleCase(p.pre) : '', p.person, p.code ? 'Course ' + p.code : '', p.cut && !p.code ? 'The PDF cut the name of this class short.' : ''].filter(Boolean).join('\n');
+      title = clean(title); title = title.charAt(0).toUpperCase() + title.slice(1);
+      return { title: title.slice(0, 120), date: p.e.date, start: p.e.start, end: p.e.end, place: p.place.slice(0, 120), notes: notes };
+    });
+    return out;
+  }
+  function pdfGrid(lib, buf) {
+    return lib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true, disableFontFace: true }).promise.then(function (doc) {
+      var pages = [], n = Math.min(doc.numPages, 60), chain = Promise.resolve();
+      for (var p = 1; p <= n; p++) (function (pn) {
+        chain = chain.then(function () { return doc.getPage(pn).then(function (pg) { return pg.getTextContent(); }).then(function (tc) {
+          pages.push(tc.items.map(function (it) { return { s: it.str, x: it.transform[4], y: it.transform[5], w: it.width || 0 }; }));
+        }); });
+      })(p);
+      return chain.then(function () { return gridFromPages(pages); });
+    });
+  }
+
   /* ---------- reading dates and times out of text ---------- */
   var MON_RE = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
   var DATE_RES = [
@@ -622,7 +753,7 @@
   }
 
   return {
-    parseCSV: parseCSV, openZip: openZip, readXLSX: readXLSX, pdfRows: pdfRows, pdfItemsToRows: pdfItemsToRows,
+    parseCSV: parseCSV, openZip: openZip, readXLSX: readXLSX, pdfRows: pdfRows, pdfItemsToRows: pdfItemsToRows, pdfGrid: pdfGrid, gridFromPages: gridFromPages,
     rowsToEvents: rowsToEvents, linesToEvents: linesToEvents, parseTicket: parseTicket, parsePass: parsePass, tripToEvent: tripToEvent,
     findDate: findDate, findTimes: findTimes, roleOf: roleOf, weekdayIndex: weekdayIndex, text: text
   };

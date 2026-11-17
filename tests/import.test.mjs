@@ -75,5 +75,31 @@ const ev = I.tripToEvent(Object.assign({}, sl), 'me');
 const cleaned = require('../core.js').cleanEvent(ev);
 ok('a confirmed journey becomes a valid event that ends the next day', !cleaned.error && cleaned.data.endDate === '2026-11-22' && cleaned.data.end === '07:45' && cleaned.data.trip.ref === 'ZZ12AB', cleaned);
 
+
+/* a weekly grid drawn as boxes, like a university timetable export. The coordinates are made up. */
+{
+  const it = (str, x, y, w) => ({ s: str, x, y, w });
+  const box = (yL, w, x0, x1, start, end, day, lines) => {
+    const c = yL + w / 2, out = [it(start, x0, yL, 15), it(end, x1, yL + w - 15, 15), it(day, x0 + 10, c - 7, 14)];
+    lines.forEach((t, i) => out.push(it(t, x0 + 18 + i * 8, c - t.length * 1.1, t.length * 2.2)));
+    return out;
+  };
+  const page = [it('31/08/2026 - 24/01/2027 5-25 Mon-Fri Example Student, 123', 36, 79, 250),
+    it('8', 106, 42, 5), it('9', 152, 42, 5), it('10', 198, 39, 10), it('11', 244, 39, 10),
+    it('10', 92, 123, 10), it('11', 92, 273, 10)];
+  page.push(...box(55, 47, 144, 282, '09:00', '12:00', 'Mon', ['HC JG202', 'FORENSICS', 'Tutorial', 'Fundamentals', 'of Digital', 'Forens 17787-', '2610', 'Pat Teacher']));
+  page.push(...box(105, 47, 144, 282, '09:00', '12:00', 'Wed', ['HC JG252a', 'Programming', 'Computer', 'Tutorial', 'Programming', '12385-2610']));
+  page.push(...box(55, 146, 466, 512, '16:00', '17:00', 'Fri', ['HC CSSG04 (LT4)', 'Lecture', 'Computer Communications 17788-2610']));
+  page.push(...box(205, 47, 144, 282, '09:00', '12:00', 'Mon', ['HC JG202', 'FORENSICS', 'Tutorial', 'Fundamentals', 'of Digital', 'Forens 17787-', '2610']));
+  const g = I.gridFromPages([page]);
+  ok('a grid of boxes is recognised', Array.isArray(g) && g.length === 4, g && g.length);
+  const m = g.filter((e) => e.date === '2026-10-05' && e.start === '09:00');
+  ok('each box gets its week, weekday and times', m.length === 1 && m[0].end === '12:00' && m[0].place === 'HC JG202', m);
+  ok('the week number becomes a date', g.some((e) => e.date === '2026-10-12' && e.title.indexOf('Forens') >= 0) && g.some((e) => e.date === '2026-10-07'), g.map((e) => e.date));
+  ok('the course name and the type make the title, the code and teacher go to notes', m[0].title === 'Fundamentals of Digital Forens tutorial' && /Pat Teacher/.test(m[0].notes) && /17787-2610/.test(m[0].notes), m[0]);
+  ok('a box on a different day of the same week is placed on that day', g.some((e) => e.date === '2026-10-09' && e.start === '16:00' && e.title === 'Computer Communications lecture'), g.map((e) => e.date + e.title));
+  ok('a page that is not a grid is left to the table reader', I.gridFromPages([[it('Title', 10, 10, 20), it('Date', 60, 10, 20)]]) === null);
+}
+
 console.log(fails ? '\n' + fails + ' FAILED' : '\nall passed');
 process.exit(fails ? 1 : 0);

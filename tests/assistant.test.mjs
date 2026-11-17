@@ -1,0 +1,35 @@
+process.env.TZ = 'Europe/London';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const A = require('../assistant.js');
+let fails = 0;
+const ok = (name, cond, extra) => { if (!cond) { fails++; console.log('FAIL', name, extra !== undefined ? JSON.stringify(extra) : ''); } else console.log('ok  ', name); };
+const ctx = { today: '2026-11-17', me: 'me1', members: [{ id: 'me1', name: 'Daniel' }, { id: 'an1', name: 'Annie' }] };
+const ev = (s) => { const r = A.parse(s, ctx); return r.events ? r.events[0] : r; };
+const line = (e) => [e.title, e.date, e.start, e.end, e.allDay ? 'allday' : '', e.repeat || '', e.until || ''].join('|');
+
+ok('a sentence with a day and a time', line(ev('add dentist tomorrow at 3pm')) === 'Dentist|2026-11-18|15:00|16:00|||', ev('add dentist tomorrow at 3pm'));
+ok('a time range and a weekday', line(ev('lunch with Annie on friday from 1 to 2pm')) === 'Lunch with Annie|2026-11-20|13:00|14:00|||', line(ev('lunch with Annie on friday from 1 to 2pm')));
+ok('a weekly repeat with an end date', line(ev('gym every monday at 7am until 20 dec')) === 'Gym|2026-11-23|07:00|08:00||weekly|2026-12-20', line(ev('gym every monday at 7am until 20 dec')));
+ok('a written date, a time and a length', line(ev('meeting 25 nov 10:30 for 90 minutes')) === 'Meeting|2026-11-25|10:30|12:00|||', line(ev('meeting 25 nov 10:30 for 90 minutes')));
+ok('no time means an all day event', line(ev('essay due friday')) === 'Essay due|2026-11-20|||allday||', line(ev('essay due friday')));
+ok('tonight is the evening', ev('dinner tonight').start === '19:00' && ev('dinner tonight').date === '2026-11-17', ev('dinner tonight'));
+ok('a bare hour in the afternoon is read as pm', ev('call mum at 5').start === '17:00', ev('call mum at 5'));
+ok('a day of the month with an ordinal', ev('exam on the 3rd of december at 9').date === '2026-12-03' && ev('exam on the 3rd of december at 9').start === '09:00', ev('exam on the 3rd of december at 9'));
+ok('in two weeks', ev('book flights in 2 weeks').date === '2026-12-01', ev('book flights in 2 weeks'));
+ok('next friday is in the following week', ev('seminar next friday 2pm').date === '2026-11-27', ev('seminar next friday 2pm'));
+ok('a weekday that has passed this week goes to next week', ev('party on monday 8pm').date === '2026-11-23', ev('party on monday 8pm'));
+ok('lunch gets a lunch time', ev('lunch with dad friday').start === '12:30', ev('lunch with dad friday'));
+ok('an event for another person', JSON.stringify(ev('dinner friday 7pm for Annie').who) === '["an1"]', ev('dinner friday 7pm for Annie'));
+ok('an event for everyone', JSON.stringify(ev('cinema saturday 8pm for us').who) === '[]', ev('cinema saturday 8pm for us'));
+ok('a place after at', ev('coffee friday 10am at Costa').place === 'Costa', ev('coffee friday 10am at Costa'));
+ok('a question about tomorrow', JSON.stringify(A.parse("what's on tomorrow?", ctx)) === JSON.stringify({ intent: 'show', from: '2026-11-18', to: '2026-11-18', label: '' }), A.parse("what's on tomorrow?", ctx));
+ok('a question about next week', A.parse('what do I have next week', ctx).from === '2026-11-23' && A.parse('what do I have next week', ctx).to === '2026-11-29', A.parse('what do I have next week', ctx));
+ok('a question about free time', A.parse('when am I free next week', ctx).intent === 'free' && A.parse('when am I free next week', ctx).from === '2026-11-23', A.parse('when am I free next week', ctx));
+ok('a title with no date asks when', A.parse('add dentist', ctx).ask === 'date', A.parse('add dentist', ctx));
+ok('a greeting gets help', A.parse('hello', ctx).intent === 'help');
+ok('gibberish is not an event', A.parse('banana', ctx).intent === 'unknown', A.parse('banana', ctx));
+ok('the filler words are removed from the title', ev('Please can you add a haircut to my calendar on thursday at 4pm').title === 'Haircut', ev('Please can you add a haircut to my calendar on thursday at 4pm'));
+
+console.log(fails ? '\n' + fails + ' FAILED' : '\nall passed');
+process.exit(fails ? 1 : 0);

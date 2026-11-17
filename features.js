@@ -605,12 +605,29 @@ function readImportFile(file) {
   var p;
   if (ext === 'csv' || ext === 'txt' || file.type === 'text/csv') p = readFile(file, 'text').then(function (t) { im.rows = I.parseCSV(t); });
   else if (ext === 'xlsx') p = readFile(file).then(function (b) { return I.readXLSX(b); }).then(function (rows) { im.rows = rows; });
-  else if (ext === 'pdf') p = readFile(file).then(function (b) { return loadPdfJs().then(function (lib) { return I.pdfRows(lib, b); }); }).then(function (pr) { im.rows = pr.aligned || pr.rows; im.alt = pr.aligned ? pr.rows : null; im.lines = pr.lines; });
+  else if (ext === 'pdf') p = readFile(file).then(function (b) {
+    return loadPdfJs().then(function (lib) {
+      /* a weekly grid of boxes, such as a TimeEdit export, is read box by box. Anything else is read as a table. */
+      return I.pdfGrid(lib, b.slice(0)).catch(function () { return null; }).then(function (grid) {
+        if (grid && grid.length) return { grid: grid };
+        return I.pdfRows(lib, b).then(function (pr) { return { pr: pr }; });
+      });
+    });
+  }).then(function (r) {
+    if (r.grid) {
+      im.grid = true;
+      im.icsEvents = r.grid.map(function (g) {
+        var c = C.cleanEvent({ title: g.title, date: g.date, start: g.start, end: g.end, place: g.place, notes: g.notes });
+        return c.error ? null : { id: 'g' + hash36([g.date, g.start, g.end, g.title, g.place].join('|')), data: c.data };
+      }).filter(Boolean);
+    } else { var pr = r.pr; im.rows = pr.aligned || pr.rows; im.alt = pr.aligned ? pr.rows : null; im.lines = pr.lines; }
+  });
   else if (ext === 'ics' || file.type === 'text/calendar') p = readFile(file, 'text').then(function (t) { var r = C.parseICS(t); im.icsEvents = r.events; im.icsInfo = r; });
   else if (ext === 'xls' || ext === 'numbers' || ext === 'doc' || ext === 'docx') p = Promise.reject(new Error('That kind of file cannot be read directly. Please save it as an Excel .xlsx, a CSV or a PDF and choose that instead.'));
   else p = Promise.reject(new Error('That kind of file is not supported. Please choose a CSV, an Excel .xlsx, a PDF or a calendar .ics file.'));
   p.then(function () { computeImport(); drawImport(); }).catch(function (e) { ui.imp = null; body.innerHTML = ''; err.textContent = e.message || 'That file could not be read.'; });
 }
+function hash36(str) { var h = 5381, g = 52711; for (var i = 0; i < str.length; i++) { var ch = str.charCodeAt(i); h = ((h << 5) + h + ch) | 0; g = ((g << 5) ^ g ^ ch * 31) | 0; } return (h >>> 0).toString(36) + (g >>> 0).toString(36); }
 function computeImport() {
   var im = ui.imp, o = { startDate: im.startDate, until: im.until || '', year: +T.today().slice(0, 4) };
   if (im.order !== 'auto') o.order = im.order;
@@ -648,6 +665,7 @@ function drawImport() {
       '<div class="note">For example, if the sessions after 1 pm each day are optional for you, enter 13:00. They stay in your calendar, shown softly, and are left out of your free time and countdowns.</div>';
   }
   if (res.skipped && res.skipped.length) h += '<div class="note">' + res.skipped.length + (res.skipped.length === 1 ? ' row was' : ' rows were') + ' left out because ' + (res.skipped.length === 1 ? 'it' : 'they') + ' had no usable date or title.</div>';
+  if (im.grid) h += '<div class="note">This PDF is a timetable drawn as boxes, one for each class in each week, so every class is added on its own date. PDFs sometimes cut long names short, so please check the names. If your timetable system can export a calendar file (.ics), that gives exact names.</div>';
   if (im.icsInfo && (im.icsInfo.skipped || im.icsInfo.simplified)) h += '<div class="note">' + (im.icsInfo.skipped ? im.icsInfo.skipped + ' cancelled or incomplete entries were left out. ' : '') + (im.icsInfo.simplified ? im.icsInfo.simplified + ' events use a repeat rule that Tandem cannot follow exactly.' : '') + '</div>';
   if (im.rows && !im.icsEvents && (res.mode === 'table' || res.mode === 'weekday')) {
     var hd = res.headers || [];

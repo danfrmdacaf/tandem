@@ -32,6 +32,21 @@ A banner and a Get the app button lead to an install guide written for the devic
 
 The service worker fetches files from the network first, so a new version is used on the next visit, and keeps a saved copy for use without a connection.
 
+## Otto, the helper in the corner
+
+Otto is a small otter in the corner of the screen. Click Otto and type what you want to plan, for example "dentist next Friday at 3pm" or "gym every Monday at 7am until 20 December". Otto shows the event and adds it only when Add is chosen. Otto can also say what is on ("what is on tomorrow") and find free days ("when am I free next week"). This works on every device with no setup, because the sentence is understood inside the page.
+
+For harder wording, Otto can ask a model running on the same computer through Ollama. Nothing leaves the computer. In Otto's settings, switch on Ollama, check the connection and choose a model. Ollama must allow the page to reach it. On a Mac, run the first line in Terminal, then quit and reopen Ollama:
+
+    launchctl setenv OLLAMA_ORIGINS "https://danfrmdacaf.github.io"
+    ollama pull llama3
+
+Safari blocks a web page from reaching a program on the same computer, so use Chrome, Edge or Firefox for Ollama. A phone or tablet cannot reach Ollama on a computer, and uses the built in understanding.
+
+## Timetable PDFs drawn as boxes
+
+A weekly timetable PDF such as the TimeEdit export draws each class as a box inside a column for each week. Tandem reads each box for its week, weekday, start and end times, room, course name and teacher, and adds every class on its own date. A PDF can cut long course names short, so a calendar file (.ics) from the timetable system gives exact names where it is offered.
+
 ## How people join
 
 1. One person creates a calendar and chooses a name, a name for themselves and a colour.
