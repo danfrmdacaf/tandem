@@ -26,6 +26,8 @@ Open the application: https://danfrmdacaf.github.io/tandem/
 
 ## The interface
 
+The Home page opens with a greeting and a one line summary of the day, then widgets: Next up, Today, Countdown, This week, Hours this week, Free days and Month. Each can be small, medium or large and shown plain, tinted or outlined, and all of them show the real calendar. Today draws a line for the current time, and This week places each event at its hour.
+
 Tandem is laid out like an application. The top bar holds the calendar switcher, the Home, Calendar and Agenda tabs, search, the Add button and Settings. On a phone the same choices sit in a bar at the bottom, with Add in the middle. The Calendar tab offers a month, a week drawn against the hours, and a single day. On a large screen the selected day is shown beside the calendar, with quick actions for importing a file, adding a ticket and inviting someone. The Add menu is the one place to add an event, import a file, add a ticket, invite someone or create another calendar.
 
 A banner and a Get the app button lead to an install guide written for the device in use. Where a browser allows it, one button installs Tandem. On an iPhone or an iPad, Apple does not allow a website to install itself, so the guide shows the Share and Add to Home Screen steps.
@@ -46,6 +48,10 @@ Safari blocks a web page from reaching a program on the same computer, so use Ch
 ## Timetable PDFs drawn as boxes
 
 A weekly timetable PDF such as the TimeEdit export draws each class as a box inside a column for each week. Tandem reads each box for its week, weekday, start and end times, room, course name and teacher, and adds every class on its own date. A PDF can cut long course names short, so a calendar file (.ics) from the timetable system gives exact names where it is offered.
+
+## Staying signed in and staying current
+
+Signing in is kept on the device for ninety days, and the time restarts each time Tandem is used, so closing and reopening Tandem does not sign anyone out. Tandem also asks the browser to keep its saved data. Each published version carries a build stamp in config.js. When Tandem is opened, or returned to, it compares its stamp with the published one. If a newer version exists it reloads itself straight away, unless the person is in the middle of something, in which case a banner offers the update. Before publishing a change, run `python3 scripts/bump-build.py` so the stamp changes.
 
 ## How people join
 

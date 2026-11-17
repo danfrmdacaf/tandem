@@ -49,12 +49,13 @@ var ICON = {
 var LS_KEY = 'tandem.v1';
 function defaultWidgets() {
   return [
-    { id: 'w1', type: 'today', size: 'm', style: 'plain' },
+    { id: 'w1', type: 'next', size: 'm', style: 'tint' },
     { id: 'w2', type: 'countdown', size: 's', style: 'plain' },
-    { id: 'w3', type: 'next', size: 's', style: 'plain' },
-    { id: 'w4', type: 'week', size: 'l', style: 'plain' },
-    { id: 'w5', type: 'free', size: 'm', style: 'plain' },
-    { id: 'w6', type: 'month', size: 'l', style: 'plain' }
+    { id: 'w3', type: 'load', size: 's', style: 'plain' },
+    { id: 'w4', type: 'today', size: 'm', style: 'plain' },
+    { id: 'w5', type: 'week', size: 'm', style: 'plain' },
+    { id: 'w6', type: 'free', size: 'm', style: 'plain' },
+    { id: 'w7', type: 'month', size: 'l', style: 'plain' }
   ];
 }
 function blank() { return { rooms: [], active: null, data: {}, rules: {}, goneRooms: {}, account: null, device: { view: 'month', cal: 'month', widgets: defaultWidgets(), widgetsAt: 0, hidden: {}, hideOptional: false } }; }
@@ -223,25 +224,68 @@ function widgetsChanged() { S.device.widgetsAt = Date.now(); save(); if (T.acctS
 function today() { return localToday(); }
 
 /* ---------- widgets ---------- */
-var WIDGETS = [['today', 'Today'], ['next', 'Next up'], ['countdown', 'Countdown'], ['week', 'This week'], ['free', 'Free together'], ['month', 'Month']];
+var WIDGETS = [['today', 'Today'], ['next', 'Next up'], ['countdown', 'Countdown'], ['week', 'This week'], ['load', 'Hours this week'], ['free', 'Free days'], ['month', 'Month']];
 var SIZES = [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']];
-var STYLES = [['plain', 'Plain'], ['bold', 'Bold'], ['outline', 'Outline']];
-var LIMITS = { today: { s: 2, m: 4, l: 9 }, next: { s: 2, m: 3, l: 7 } };
+var STYLES = [['plain', 'Plain'], ['tint', 'Tinted'], ['outline', 'Outline']];
+var LIMITS = { today: { s: 1, m: 3, l: 7 }, next: { s: 0, m: 2, l: 5 } };
 
-function eventRow(o, td, opts) {
-  var dot = dotFor(o.data), st = dot ? ' style="--c:' + dot + '"' : '';
-  return '<div class="row' + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '"><span class="tm">' + esc(opts && opts.day ? relDay(o.date, td) : (o.data.allDay ? 'All day' : (o.data.start || ''))) + '</span><span class="dot"' + st + '></span><span class="tx">' + esc(o.data.title) + (opts && opts.day && !o.data.allDay && o.data.start ? ' <span class="sub">' + esc(o.data.start) + '</span>' : '') + '</span></div>';
+function wcell(cls, attrs, inner) { return ui.pv ? '<span class="' + cls + '">' + inner + '</span>' : '<button type="button" class="' + cls + '" ' + attrs + '>' + inner + '</button>'; }
+function hmNow() { var n = hmMin(nowHM()); return n === null ? 0 : n; }
+function dur(mins) { mins = Math.max(0, Math.round(mins)); return mins < 60 ? mins + ' min' : Math.floor(mins / 60) + ' h' + (mins % 60 ? ' ' + (mins % 60) + ' min' : ''); }
+function whoNames(data) { var t = whoText(data); return t === 'Everyone' ? '' : t; }
+function tlRow(o, past) {
+  var b = barAttrs(o.data), t = o.data.allDay ? 'All day' : (o.data.start || '');
+  var sub = [o.data.place, o.data.ov ? o.data.ovLabel : whoNames(o.data)].filter(Boolean).join(', ');
+  return '<div class="tl' + (past ? ' past' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '"><span class="tm">' + esc(t) + '</span><span class="' + b.cls + '" style="' + b.style + '"></span><span class="tx"><b>' + esc(o.data.title) + '</b>' + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</span></div>';
 }
+function endMin(o) { var e = hmMin(o.data.end), s = hmMin(o.data.start); return e === null ? (s === null ? 0 : s + 45) : e; }
+
+/* summary used by the greeting and the widgets */
+function dayBrief() {
+  var td = today(), now = hmNow(), evs = eventsList().filter(function (e) { return !e.deleted && e.data && keepFn()(e.data); });
+  var occ = C.byDate(evs, td, td, null, occView(true))[td] || [];
+  var left = occ.filter(function (o) { return o.data.allDay || !o.first || !o.last || endMin(o) > now; });
+  return { total: occ.length, left: left };
+}
+
 function widgetBody(w) {
-  var td = today(), evs = eventsList(), keep = keepFn(), now = nowHM(), body = '', vf = occView(false), vs = occView(true);
+  var td = today(), evs = eventsList(), keep = keepFn(), now = hmNow(), body = '', vf = occView(false), vs = occView(true);
   var filtered = evs.filter(function (e) { return !e.deleted && e.data && keep(e.data); });
+  var size = w.size;
   if (w.type === 'today') {
-    var occ = (C.byDate(filtered, td, td, null, vf)[td] || []).filter(function (o) { return !(o.start === o.end && !o.data.allDay && o.data.end && o.data.end < now); });
-    var lim = LIMITS.today[w.size];
-    body = '<h4>Today</h4><div class="wl">' + (occ.length ? occ.slice(0, lim).map(function (o) { return eventRow(o, td); }).join('') + (occ.length > lim ? '<div class="sub">and ' + (occ.length - lim) + ' more</div>' : '') : '<div class="sub">Nothing else planned today.</div>') + '</div>';
+    var occ = C.byDate(filtered, td, td, null, vf)[td] || [], strip = occ.filter(function (o) { return o.data.allDay; }), timed = occ.filter(function (o) { return !o.data.allDay; });
+    var upIdx = timed.findIndex(function (o) { return !(o.first && o.last) || endMin(o) > now; });
+    var meta = occ.length ? occ.length + (occ.length === 1 ? ' event' : ' events') : '';
+    body = '<h4>Today' + (meta ? '<span>' + meta + '</span>' : '') + '</h4>';
+    if (!occ.length) body += '<div class="calm">Nothing planned today.</div>';
+    else if (size === 's') {
+      var nx = timed[upIdx] || strip[0];
+      body += nx ? '<div class="wl">' + tlRow(nx, false) + '</div>' + (occ.length > 1 ? '<div class="more">and ' + (occ.length - 1) + ' more</div>' : '') : '<div class="calm">Everything is done for today.</div>';
+    } else {
+      var lim = LIMITS.today[size], rows = '', shown = 0, nowDrawn = false;
+      strip.forEach(function (o) { rows += tlRow(o, false); shown++; });
+      timed.forEach(function (o, i) {
+        if (shown >= lim) return;
+        if (!nowDrawn && i === (upIdx < 0 ? timed.length : upIdx) && (upIdx !== 0)) { rows += '<div class="nowrow"><i></i><span>' + nowHM() + '</span></div>'; nowDrawn = true; }
+        rows += tlRow(o, upIdx < 0 || i < upIdx); shown++;
+      });
+      if (!nowDrawn && upIdx === 0 && timed.length) rows = rows.replace(/(<div class="tl)/, '<div class="nowrow"><i></i><span>' + nowHM() + '</span></div>$1');
+      body += '<div class="wl tlist">' + rows + '</div>' + (occ.length > shown ? '<div class="more">and ' + (occ.length - shown) + ' more</div>' : '');
+    }
   } else if (w.type === 'next') {
-    var up = C.upcoming(filtered, td, now, LIMITS.next[w.size], undefined, vf);
-    body = '<h4>Next up</h4><div class="wl">' + (up.length ? up.map(function (o) { return eventRow(o, td, { day: true }); }).join('') : '<div class="sub">Nothing coming up.</div>') + '</div>';
+    var up = C.upcoming(filtered, td, nowHM(), 6, undefined, vf);
+    body = '<h4>Next up</h4>';
+    if (!up.length) body += '<div class="calm">Nothing coming up.</div>';
+    else {
+      var o0 = up[0], same = o0.date === td, s0 = hmMin(o0.data.start), until = '';
+      if (o0.data.allDay) until = relDay(o0.date, td);
+      else if (same && s0 !== null) until = s0 <= now ? 'Happening now' : 'In ' + dur(s0 - now);
+      else until = relDay(o0.date, td) + (o0.data.start ? ' at ' + o0.data.start : '');
+      var sub0 = [o0.data.allDay ? '' : o0.data.start + (o0.data.end && o0.data.end !== o0.data.start ? ' to ' + o0.data.end : ''), o0.data.place].filter(Boolean).join(', ');
+      body += '<div class="hero"><div class="when">' + esc(until) + '</div><div class="what">' + esc(o0.data.title) + '</div>' + (sub0 ? '<div class="sub">' + esc(sub0) + '</div>' : '') + '</div>';
+      var more = up.slice(1, 1 + LIMITS.next[size]);
+      if (more.length) body += '<div class="wl">' + more.map(function (o) { return '<div class="tl"><span class="tm">' + esc(relDay(o.date, td)) + '</span><span class="' + barAttrs(o.data).cls + '" style="' + barAttrs(o.data).style + '"></span><span class="tx"><b>' + esc(o.data.title) + '</b><small>' + esc(o.data.allDay ? 'All day' : o.data.start || '') + '</small></span></div>'; }).join('') + '</div>';
+    }
   } else if (w.type === 'countdown') {
     var target = null, own = filtered.filter(function (e) { return !e.data.ov; });
     if (w.pin) { var pe = own.filter(function (e) { return e.id === w.pin; })[0]; if (pe) { var st = C.occurrenceStarts(pe.data, td, C.add(td, 800)); if (st.length) target = { date: st[0], title: pe.data.title }; } }
@@ -249,56 +293,74 @@ function widgetBody(w) {
       var cands = C.upcoming(own, C.add(td, 1), '00:00', 40, undefined, vs), pick = cands.filter(function (o) { return o.data.allDay; })[0] || cands[0];
       if (pick) target = { date: pick.date, title: pick.data.title };
     }
+    body = '<h4>Countdown</h4>';
     if (target) {
       var n = C.diff(td, target.date);
-      body = '<h4>Countdown</h4><div class="big">' + n + '</div><div class="cd"><strong>' + (n === 1 ? 'day until ' : 'days until ') + '</strong>' + esc(target.title) + '</div>' + (w.size === 's' ? '' : '<div class="sub">' + esc(niceDate(target.date)) + '</div>');
-    } else body = '<h4>Countdown</h4><div class="sub">Add an event and its countdown will appear here.</div>';
+      body += '<div class="cd"><div class="cdn"><b>' + n + '</b><span>' + (n === 1 ? 'day' : 'days') + '</span></div><div class="cdt">' + esc(target.title) + '</div>' + (size === 's' ? '' : '<div class="sub">' + esc(niceDate(target.date)) + (n >= 14 ? ', about ' + Math.round(n / 7) + ' weeks away' : '') + '</div>') + '</div>';
+    } else body += '<div class="calm">Add an event and its countdown will appear here.</div>';
   } else if (w.type === 'week') {
-    var mon = C.monday(td), map = C.byDate(filtered, mon, C.add(mon, 6), null, vf), cells = '';
+    var mon = C.monday(td), map = C.byDate(filtered, mon, C.add(mon, 6), null, vf), lo = 8 * 60, hi = 20 * 60, cols = '';
     for (var i = 0; i < 7; i++) {
-      var d = C.add(mon, i), list = map[d] || [];
-      cells += '<div class="d' + (d === td ? ' today' : '') + '"><span>' + DOW3[C.dow(d)].slice(0, w.size === 's' ? 1 : 3) + '</span><span class="n">' + (+d.slice(8)) + '</span><span class="dots2">' +
-        list.slice(0, 3).map(function (o) { var c = dotFor(o.data); return '<i' + (c ? ' style="--c:' + c + '"' : '') + '></i>'; }).join('') + '</span></div>';
+      var d = C.add(mon, i), list = map[d] || [], blocks = '', dots = '';
+      list.forEach(function (o) {
+        var c = dotFor(o.data), sm = hmMin(o.data.start), cs = c ? '--c:' + c : '';
+        if (o.data.allDay || sm === null || !(o.first && o.last)) { dots += '<i style="' + cs + '"></i>'; return; }
+        var em = endMin(o), top = Math.max(0, Math.min(1, (sm - lo) / (hi - lo))), ht = Math.max(0.05, Math.min(1 - top, (em - sm) / (hi - lo)));
+        blocks += '<b class="' + (o.st === 'optional' ? 'opt' : o.st === 'hide' ? 'hid' : '') + '" style="top:' + (top * 100).toFixed(1) + '%;height:' + (ht * 100).toFixed(1) + '%;' + cs + '"></b>';
+      });
+      cols += wcell('wd' + (d === td ? ' today' : ''), 'data-act="go-day" data-date="' + d + '" aria-label="' + esc(niceDate(d)) + ', ' + list.length + (list.length === 1 ? ' event' : ' events') + '"', '<span class="dl">' + DOW3[C.dow(d)].slice(0, size === 's' ? 1 : 3) + '</span><span class="dn2">' + (+d.slice(8)) + '</span><span class="dots2">' + dots + '</span><span class="track">' + blocks + '</span>');
     }
-    body = '<h4>This week</h4><div class="wk">' + cells + '</div>';
-    if (w.size === 'l') {
-      var upw = C.upcoming(filtered, td, now, 4, undefined, vf);
-      body += '<div class="wl">' + upw.map(function (o) { return eventRow(o, td, { day: true }); }).join('') + '</div>';
+    body = '<h4>This week</h4><div class="wk2 ' + size + '">' + cols + '</div>';
+    if (size === 'l') {
+      var upw = C.upcoming(filtered, td, nowHM(), 3, undefined, vf);
+      if (upw.length) body += '<div class="wl">' + upw.map(function (o) { return '<div class="tl"><span class="tm">' + esc(relDay(o.date, td)) + '</span><span class="' + barAttrs(o.data).cls + '" style="' + barAttrs(o.data).style + '"></span><span class="tx"><b>' + esc(o.data.title) + '</b><small>' + esc(o.data.allDay ? 'All day' : o.data.start || '') + '</small></span></div>'; }).join('') + '</div>';
     }
+  } else if (w.type === 'load') {
+    var mon2 = C.monday(td), map2 = C.byDate(filtered, mon2, C.add(mon2, 6), null, vs), hrs = [], tot = 0, best = -1;
+    for (var k = 0; k < 7; k++) {
+      var dd = C.add(mon2, k), sum = 0;
+      (map2[dd] || []).forEach(function (o) { if (!o.data.allDay && o.first && o.last && hmMin(o.data.start) !== null) sum += Math.max(0, endMin(o) - hmMin(o.data.start)); });
+      hrs.push({ d: dd, h: sum / 60 }); tot += sum / 60; if (best < 0 || sum / 60 > hrs[best].h) best = k;
+    }
+    var mx = Math.max.apply(null, hrs.map(function (x) { return x.h; })) || 1;
+    body = '<h4>Hours this week</h4><div class="ld"><div class="ldn"><b>' + (Math.round(tot * 10) / 10) + '</b><span>hours planned</span></div>' + (tot > 0 && size !== 's' ? '<div class="sub">Busiest on ' + esc(dayName(hrs[best].d)) + ' with ' + (Math.round(hrs[best].h * 10) / 10) + ' hours.</div>' : '') + '</div>';
+    if (size !== 's') body += '<div class="bars">' + hrs.map(function (x) { return '<div class="bar1' + (x.d === td ? ' today' : '') + '"><span class="v">' + (x.h ? Math.round(x.h * 10) / 10 : '') + '</span><span class="col"><span class="fill" style="height:' + Math.max(x.h ? 4 : 1, Math.round(x.h / mx * 100)) + '%"></span></span><span class="dl">' + DOW3[C.dow(x.d)].slice(0, 1) + '</span></div>'; }).join('') + '</div>';
   } else if (w.type === 'free') {
     var fr = C.freeTogether(filtered, td, 7, vs);
     var freeDays = fr.filter(function (x) { return x.status === 'free'; }), eveDays = fr.filter(function (x) { return x.status === 'evening'; });
-    if (w.size === 's') {
-      var nx = freeDays[0] || eveDays[0];
-      body = '<h4>Free together</h4><div class="big" style="font-size:26px">' + (nx ? esc(relDay(nx.date, td)) : 'None') + '</div><div class="sub">' + (nx ? (nx.status === 'free' ? 'The next day with nothing planned.' : 'Free from the evening.') : 'No free day this week.') + '</div>';
+    body = '<h4>Free days</h4>';
+    if (size === 's') {
+      var nx2 = freeDays[0] || eveDays[0];
+      body += '<div class="cd"><div class="cdt big">' + (nx2 ? esc(relDay(nx2.date, td)) : 'None') + '</div><div class="sub">' + (nx2 ? (nx2.status === 'free' ? 'The next day with nothing planned.' : 'Free from the evening.') : 'Every day this week has something planned.') + '</div></div>';
     } else {
-      body = '<h4>Free together</h4><div class="free">' + fr.map(function (x) { return '<div class="' + x.status + '">' + DOW3[C.dow(x.date)] + '</div>'; }).join('') + '</div>' +
+      body += '<div class="fd">' + fr.map(function (x) { return '<div class="fdc ' + x.status + (x.date === td ? ' today' : '') + '"><span class="dl">' + DOW3[C.dow(x.date)] + '</span><i></i><span class="st">' + (x.status === 'free' ? 'Free' : x.status === 'evening' ? 'Evening' : 'Busy') + '</span></div>'; }).join('') + '</div>' +
         '<div class="sub">' + (freeDays.length ? 'Nothing planned on ' + freeDays.map(function (x) { return dayName(x.date); }).join(', ') + '. ' : '') + (eveDays.length ? 'Free from the evening on ' + eveDays.map(function (x) { return dayName(x.date); }).join(', ') + '.' : '') + (!freeDays.length && !eveDays.length ? 'Every day this week has something planned.' : '') + '</div>';
     }
   } else if (w.type === 'month') {
     var first = C.monthStart(td), start = C.monday(first), last = C.add(C.addMonths(first, 1), -1), end = C.add(C.monday(last), 6);
-    var mp = C.byDate(filtered, start, end, null, vf), cs = '';
-    ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (l) { cs += '<span class="out">' + l + '</span>'; });
-    for (var dd = start; dd <= end; dd = C.add(dd, 1)) {
-      cs += '<span class="' + (dd === td ? 'today ' : '') + (mp[dd] ? 'has ' : '') + (dd.slice(0, 7) !== td.slice(0, 7) ? 'out' : '') + '">' + (+dd.slice(8)) + '</span>';
+    var mp = C.byDate(filtered, start, end, null, vf), cs2 = '';
+    ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (l) { cs2 += '<span class="hd">' + l + '</span>'; });
+    for (var dd2 = start; dd2 <= end; dd2 = C.add(dd2, 1)) {
+      var cnt = (mp[dd2] || []).length;
+      cs2 += wcell((dd2 === td ? 'today ' : '') + (cnt ? 'has ' : '') + (dd2.slice(0, 7) !== td.slice(0, 7) ? 'out' : ''), 'data-act="go-day" data-date="' + dd2 + '" tabindex="-1" aria-label="' + esc(niceDate(dd2)) + '"', (+dd2.slice(8)) + (cnt ? '<i></i>' : ''));
     }
-    body = '<h4>' + MONTHS[+td.slice(5, 7) - 1] + '</h4><div class="mini">' + cs + '</div>';
+    body = '<h4>' + MONTHS[+td.slice(5, 7) - 1] + '<span>' + td.slice(0, 4) + '</span></h4><div class="mini">' + cs2 + '</div>';
   }
   return body;
 }
 function widgetHtml(w, idx, total, edit) {
-  var col = myColour(), ink = C.inkOn(col);
+  var col = myColour(), style = w.style === 'bold' ? 'tint' : w.style;
   var bar = '';
   if (edit) {
     bar = '<div class="wedit">' +
-      '<button type="button" data-act="w-left" data-i="' + idx + '"' + (idx === 0 ? ' disabled' : '') + ' aria-label="Move earlier">Earlier</button>' +
-      '<button type="button" data-act="w-right" data-i="' + idx + '"' + (idx === total - 1 ? ' disabled' : '') + ' aria-label="Move later">Later</button>' +
+      '<button type="button" data-act="w-left" data-i="' + idx + '"' + (idx === 0 ? ' disabled' : '') + ' aria-label="Move earlier">' + ICON.left + '</button>' +
+      '<button type="button" data-act="w-right" data-i="' + idx + '"' + (idx === total - 1 ? ' disabled' : '') + ' aria-label="Move later">' + ICON.right + '</button>' +
       '<select data-w="' + idx + ':size" aria-label="Size">' + SIZES.map(function (s) { return '<option value="' + s[0] + '"' + (w.size === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
-      '<select data-w="' + idx + ':style" aria-label="Design">' + STYLES.map(function (s) { return '<option value="' + s[0] + '"' + (w.style === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
+      '<select data-w="' + idx + ':style" aria-label="Design">' + STYLES.map(function (s) { return '<option value="' + s[0] + '"' + (style === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'; }).join('') + '</select>' +
       (w.type === 'countdown' ? '<select data-w="' + idx + ':pin" aria-label="Event">' + '<option value="">Next event</option>' + eventsList().filter(function (e) { return !e.deleted && e.data && !e.data.ov; }).slice(0, 80).map(function (e) { return '<option value="' + esc(e.id) + '"' + (w.pin === e.id ? ' selected' : '') + '>' + esc(e.data.title) + '</option>'; }).join('') + '</select>' : '') +
-      '<button type="button" data-act="w-remove" data-i="' + idx + '">Remove</button></div>';
+      '<button type="button" class="rm" data-act="w-remove" data-i="' + idx + '">Remove</button></div>';
   }
-  return '<article class="w ' + w.size + ' st-' + w.style + '" style="--c:' + col + ';--wi:' + ink + '">' + widgetBody(w) + bar + '</article>';
+  return '<article class="w ' + w.size + ' st-' + style + ' wt-' + w.type + (edit ? ' editing' : '') + '" style="--c:' + col + '">' + widgetBody(w) + bar + '</article>';
 }
 
 /* ---------- views ---------- */
@@ -324,13 +386,19 @@ function occItem(o) {
   var b = barAttrs(o.data), t = C.timeLabel(o);
   return '<button type="button" class="item' + (o.data.ov ? ' ov' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="in"><div class="tt">' + esc(o.data.title) + (o.data.att ? ' <span class="tag">Ticket</span>' : '') + (o.st === 'optional' ? ' <span class="tag">Optional</span>' : o.st === 'hide' ? ' <span class="tag">Hidden</span>' : '') + '</div><div class="sub">' + esc([t, o.data.place, o.data.ov ? o.data.ovLabel : whoText(o.data)].filter(Boolean).join('  ·  ')) + '</div></span></button>';
 }
+function greeting() {
+  var h = new Date().getHours(), rm = activeRoom(), m = memberMap()[rm ? rm.me : ''], nm = (S.account && S.account.name) || (m && m.name) || '';
+  return (h < 5 ? 'Late night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening') + (nm ? ', ' + nm.split(' ')[0] : '');
+}
 function viewHome() {
-  var td = today(), list = S.device.widgets;
-  var h = '<div class="boardbar"><div><h2>' + esc(niceDate(td)) + '</h2></div><div class="spacer"></div>' +
+  var td = today(), list = S.device.widgets, br = dayBrief(), nxt = br.left.filter(function (o) { return !o.data.allDay; })[0];
+  var line = !br.total ? 'Nothing is planned today.' : !br.left.length ? 'You are done for today.' : br.left.length + (br.left.length === 1 ? ' thing' : ' things') + ' left today' + (nxt ? ', next is ' + nxt.data.title + ' at ' + nxt.data.start + '.' : '.');
+  var h = '<div class="boardbar"><div class="hello"><h2>' + esc(greeting()) + '</h2><p>' + esc(niceDate(td) + '. ' + line) + '</p></div><div class="spacer"></div>' +
     (ui.edit ? '<button type="button" class="btn" data-act="w-add">Add a widget</button><button type="button" class="btn primary" data-act="w-done">Done</button>' : '<button type="button" class="btn" data-act="w-edit">Edit Home</button>') + '</div>';
-  h += (T.startCard ? T.startCard() : '') + (T.checklist ? T.checklist() : '');
+  h += (T.startCard ? T.startCard() : '');
   h += '<div class="board">' + list.map(function (w, i) { return widgetHtml(w, i, list.length, ui.edit); }).join('') + '</div>';
   if (!list.length) h += '<div class="empty">Your Home page is empty. Choose Edit Home, then Add a widget.</div>';
+  h += T.checklist ? T.checklist() : '';
   return h;
 }
 var PX = 48;
@@ -625,15 +693,17 @@ function openRooms() {
 }
 function openNewOrJoin() { openDialog('<div class="actions"><h2>Create or join</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' + createCard() + joinCard()); }
 function openGallery() {
-  openDialog('<div class="actions"><h2>Choose a widget</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
+  ui.pv = true;
+  var gh = ('<div class="actions"><h2>Choose a widget</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
     '<p class="note">Pick a design to add it to your Home page. You can change its size and design afterwards with Edit Home.</p>' +
     WIDGETS.map(function (t) {
-      var size = t[0] === 'countdown' ? 's' : 'm';
+      var size = t[0] === 'countdown' || t[0] === 'load' ? 's' : 'm';
       return '<div class="sect"><h3>' + t[1] + '</h3><div class="gal">' + STYLES.map(function (st) {
         var w = { id: 'p', type: t[0], size: size, style: st[0] };
         return '<button type="button" class="pick" data-act="w-pick" data-type="' + t[0] + '" data-style="' + st[0] + '" data-size="' + size + '" aria-label="Add ' + esc(t[1]) + ', ' + st[1] + ' design"><span class="pv ' + (size === 's' ? 'pvs' : 'pvm') + '">' + widgetHtml(w, 0, 1, false) + '</span></button>';
       }).join('') + '</div></div>';
     }).join(''));
+  ui.pv = false; openDialog(gh);
 }
 function showCode(code, expiresAt) {
   var el = $('#st-code'); if (!el) return;
@@ -861,6 +931,38 @@ window.addEventListener('offline', function () { setStatus('Offline. Changes are
 setInterval(function () { if (document.visibilityState === 'visible' && S.active) syncRoom(S.active); }, 20000);
 setInterval(function () { if (document.visibilityState === 'visible' && T.acctSync) T.acctSync(); }, 60000);
 
+/* ---------- staying current ----------
+   Each published version carries a build stamp in config.js. When the person opens Tandem, or returns to it, the stamp
+   on the server is compared with the one this copy started with. A newer one is loaded straight away, unless the
+   person is part way through something, in which case a banner offers the update instead. Signing in is kept on the
+   device, so reloading does not sign anyone out. */
+var BUILD = (window.TANDEM_CONFIG || {}).build || '';
+function busyNow() {
+  var a = document.activeElement;
+  return !!$('dialog[open]') || !!$('#ot-panel:not([hidden])') || (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+}
+function checkUpdate() {
+  if (!BUILD || navigator.onLine === false || location.protocol.indexOf('http') !== 0) return;
+  fetch('config.js?c=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (t) {
+    var m = /build:\s*"([^"]+)"/.exec(t);
+    if (!m || m[1] === BUILD) return;
+    var tried = null; try { tried = sessionStorage.getItem('tandem.reload'); } catch (e) { /* ignore */ }
+    if (tried === m[1] || busyNow()) { ui.update = true; render(); return; }
+    try { sessionStorage.setItem('tandem.reload', m[1]); } catch (e) { /* ignore */ }
+    save(); location.reload();
+  }).catch(function () { /* offline or blocked: try again later */ });
+}
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  checkUpdate();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then(function (r) { if (r) r.update().catch(function () {}); });
+});
+setInterval(function () { if (document.visibilityState === 'visible') checkUpdate(); }, 300000);
+/* ask the browser to keep the saved calendars and the sign in, so they are not cleared when space runs low */
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
+/* the Home page shows times and countdowns, so it redraws every minute while it is on screen */
+setInterval(function () { if (document.visibilityState === 'visible' && S.active && S.device.view === 'home' && !ui.edit && !busyNow()) render(); }, 60000);
+
 /* ---------- shared with the account, import and ticket features (features.js) ---------- */
 T.C = C; T.I = window.TandemImport; T.S = S; T.R = R; T.api = api; T.put = put; T.save = save; T.render = render; T.esc = esc; T.uid = uid; T.$ = $; T.$$ = $$;
 T.openDialog = openDialog; T.closeDialog = closeDialog; T.activeRoom = activeRoom; T.members = members; T.memberMap = memberMap; T.eventsList = eventsList;
@@ -881,6 +983,7 @@ function start() {
   if (!S.active && S.rooms.length) S.active = S.rooms[0].id;
   render();
   if (T.acctSync) T.acctSync();
+  setTimeout(checkUpdate, 1500);
   var key = parseKey(location.hash);
   if (key) joinWithKey(key).catch(function (x) { openDialog('<h2>This link could not be used</h2><p class="note">' + esc(x.message || 'The invitation link is not valid.') + '</p><button type="button" class="btn" data-act="close">Close</button>'); });
   else if (S.active) syncRoom(S.active);
