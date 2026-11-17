@@ -24,6 +24,14 @@ Open the application: https://danfrmdacaf.github.io/tandem/
 - **Calendar subscription.** A read only address that can be added to the Calendar application on an iPhone, an iPad, a Mac or an Android phone. See the section on widgets below.
 - **Installable.** Add it to the home screen of a phone or tablet, or to the Dock of a Mac, and it opens like any other application, with its own icon.
 
+## The interface
+
+Tandem is laid out like an application. The top bar holds the calendar switcher, the Home, Calendar and Agenda tabs, search, the Add button and Settings. On a phone the same choices sit in a bar at the bottom, with Add in the middle. The Calendar tab offers a month, a week drawn against the hours, and a single day. On a large screen the selected day is shown beside the calendar, with quick actions for importing a file, adding a ticket and inviting someone. The Add menu is the one place to add an event, import a file, add a ticket, invite someone or create another calendar.
+
+A banner and a Get the app button lead to an install guide written for the device in use. Where a browser allows it, one button installs Tandem. On an iPhone or an iPad, Apple does not allow a website to install itself, so the guide shows the Share and Add to Home Screen steps.
+
+The service worker fetches files from the network first, so a new version is used on the next visit, and keeps a saved copy for use without a connection.
+
 ## How people join
 
 1. One person creates a calendar and chooses a name, a name for themselves and a colour.

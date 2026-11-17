@@ -37,7 +37,12 @@ var ICON = {
   right: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
-  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>'
+  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-6.5 8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg>',
+  cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 7h11M9 12h11M9 17h11"/><circle cx="4.8" cy="7" r="1"/><circle cx="4.8" cy="12" r="1"/><circle cx="4.8" cy="17" r="1"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></svg>',
+  share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8.5 7.5L12 4l3.5 3.5"/><path d="M7 10H6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>'
 };
 
 /* ---------- storage ---------- */
@@ -213,7 +218,7 @@ function put(kind, id, data, deleted, quiet) {
 }
 
 /* ---------- ui state ---------- */
-var ui = { date: localToday(), edit: false, status: '', code: null, deferredInstall: null, showHidden: false };
+var ui = { date: localToday(), edit: false, status: '', code: null, deferredInstall: null, showHidden: false, update: false };
 function widgetsChanged() { S.device.widgetsAt = Date.now(); save(); if (T.acctSchedule) T.acctSchedule(); }
 function today() { return localToday(); }
 
@@ -323,9 +328,21 @@ function viewHome() {
   var td = today(), list = S.device.widgets;
   var h = '<div class="boardbar"><div><h2>' + esc(niceDate(td)) + '</h2></div><div class="spacer"></div>' +
     (ui.edit ? '<button type="button" class="btn" data-act="w-add">Add a widget</button><button type="button" class="btn primary" data-act="w-done">Done</button>' : '<button type="button" class="btn" data-act="w-edit">Edit Home</button>') + '</div>';
+  h += (T.startCard ? T.startCard() : '') + (T.checklist ? T.checklist() : '');
   h += '<div class="board">' + list.map(function (w, i) { return widgetHtml(w, i, list.length, ui.edit); }).join('') + '</div>';
   if (!list.length) h += '<div class="empty">Your Home page is empty. Choose Edit Home, then Add a widget.</div>';
   return h;
+}
+var PX = 48;
+function wide() { return window.innerWidth >= 860; }
+function isCalView(v) { return v === 'month' || v === 'week' || v === 'day'; }
+function calView() { return isCalView(S.device.cal) ? S.device.cal : 'month'; }
+function hmMin(s) { var m = /^(\d{1,2}):(\d{2})/.exec(s || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+function fmtMin(m) { m = Math.max(0, Math.min(1439, m)); return C.pad(Math.floor(m / 60)) + ':' + C.pad(m % 60); }
+function occCls(o) { return (o.data.ov ? ' ov' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : ''); }
+function chipBtn(o) {
+  var b = barAttrs(o.data);
+  return '<button type="button" class="chip' + occCls(o) + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></button>';
 }
 function viewMonth() {
   var first = C.monthStart(ui.date), start = C.monday(first), last = C.add(C.addMonths(first, 1), -1), end = C.add(C.monday(last), 6);
@@ -333,34 +350,93 @@ function viewMonth() {
   var h = '<div class="mgrid">' + ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(function (x) { return '<div class="dh">' + x + '</div>'; }).join('');
   for (var d = start; d <= end; d = C.add(d, 1)) {
     var occ = map[d] || [], w = C.dow(d);
-    h += '<button type="button" class="cell' + (d.slice(0, 7) !== first.slice(0, 7) ? ' out' : '') + (w === 0 || w === 6 ? ' wkend' : '') + (d === td ? ' today' : '') + '" data-act="day" data-date="' + d + '" aria-label="' + esc(niceDate(d)) + '"><span class="dn">' + (+d.slice(8)) + '</span><div class="chips">' +
-      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip' + (o.data.ov ? ' ov' : '') + (o.st === 'optional' ? ' opt' : o.st === 'hide' ? ' hid' : '') + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
+    h += '<button type="button" class="cell' + (d.slice(0, 7) !== first.slice(0, 7) ? ' out' : '') + (w === 0 || w === 6 ? ' wkend' : '') + (d === td ? ' today' : '') + (d === ui.date ? ' sel' : '') + '" data-act="day" data-date="' + d + '" aria-label="' + esc(niceDate(d)) + (occ.length ? ', ' + occ.length + (occ.length === 1 ? ' event' : ' events') : '') + '" aria-pressed="' + (d === ui.date) + '"><span class="dn">' + (+d.slice(8)) + '</span><div class="chips">' +
+      occ.slice(0, 3).map(function (o) { var b = barAttrs(o.data); return '<div class="chip' + occCls(o) + '"><span class="' + b.cls + '" style="' + b.style + '"></span><span class="t">' + (o.data.allDay || !o.data.start ? '' : '<span class="tm">' + esc(o.data.start) + '</span>') + esc(o.data.title) + '</span></div>'; }).join('') +
       (occ.length > 3 ? '<div class="more">and ' + (occ.length - 3) + ' more</div>' : '') + '</div><div class="dots">' +
       occ.slice(0, 6).map(function (o) { var c = dotFor(o.data); return '<span class="dot' + (o.data.ov ? ' ov' : '') + '"' + (c ? ' style="--c:' + c + '"' : '') + '></span>'; }).join('') + '</div></button>';
   }
   return h + '</div>';
 }
+/* A week or a day drawn against the hours. Only events that start and finish on the same day are placed on the
+   hours. Longer and all day events sit in a strip above. Events that overlap share the width of the column. */
+function lanes(items) {
+  var ends = [], cluster = [], cEnd = -1;
+  function flush() { var n = 0; cluster.forEach(function (i) { n = Math.max(n, i.lane + 1); }); cluster.forEach(function (i) { i.n = n; }); cluster = []; }
+  items.sort(function (a, b) { return a.s - b.s || b.e - a.e; });
+  items.forEach(function (it) {
+    if (cluster.length && it.s >= cEnd) { flush(); ends = []; cEnd = -1; }
+    var l = 0; while (ends[l] !== undefined && ends[l] > it.s) l++;
+    ends[l] = it.e; it.lane = l; cluster.push(it); cEnd = Math.max(cEnd, it.e);
+  });
+  flush();
+  return items;
+}
+function timeGrid(days) {
+  var map = C.byDate(eventsList(), days[0], days[days.length - 1], keepFn(), occView(false)), td = today(), now = hmMin(nowHM());
+  var strip = {}, timed = {}, lo = 7 * 60, hi = 21 * 60, anyStrip = false;
+  days.forEach(function (d) {
+    strip[d] = []; timed[d] = [];
+    (map[d] || []).forEach(function (o) {
+      var s = o.data.allDay ? null : hmMin(o.data.start);
+      if (s !== null && o.first && o.last) {
+        var e = hmMin(o.data.end); if (e === null || e <= s) e = Math.min(s + 45, 1440);
+        timed[d].push({ o: o, s: s, e: e });
+        lo = Math.min(lo, Math.floor(s / 60) * 60); hi = Math.max(hi, Math.ceil(e / 60) * 60);
+      } else { strip[d].push(o); anyStrip = true; }
+    });
+  });
+  var H = (hi - lo) / 60 * PX, n = days.length;
+  var h = '<div class="tg" style="--n:' + n + ';--px:' + PX + 'px"><div class="tgrow tgh"><div></div>' + days.map(function (d) {
+    return '<button type="button" class="tgd' + (d === td ? ' today' : '') + (d === ui.date ? ' sel' : '') + '" data-act="day" data-date="' + d + '" aria-pressed="' + (d === ui.date) + '"><span>' + DOW3[C.dow(d)] + '</span><b>' + (+d.slice(8)) + '</b></button>';
+  }).join('') + '</div>';
+  if (anyStrip) h += '<div class="tgrow tga"><div class="tgl">All day</div>' + days.map(function (d) { return '<div class="tgac">' + strip[d].map(chipBtn).join('') + '</div>'; }).join('') + '</div>';
+  h += '<div class="tgrow tgb" style="height:' + H + 'px"><div class="tgl tgax">';
+  for (var m = lo; m < hi; m += 60) h += '<span style="top:' + ((m - lo) / 60 * PX) + 'px">' + fmtMin(m) + '</span>';
+  h += '</div>';
+  days.forEach(function (d) {
+    h += '<div class="tgc' + (d === td ? ' today' : '') + '" data-act="slot" data-date="' + d + '" data-lo="' + lo + '" aria-label="Add an event on ' + esc(niceDate(d)) + '">';
+    lanes(timed[d]).forEach(function (it) {
+      var o = it.o, b = barAttrs(o.data), top = (it.s - lo) / 60 * PX, ht = Math.max((it.e - it.s) / 60 * PX - 2, 22), w = 100 / it.n;
+      h += '<button type="button" class="tev' + occCls(o) + '" data-act="event" data-id="' + esc(o.id) + '" data-date="' + o.date + '" style="top:' + top + 'px;height:' + ht + 'px;left:' + (it.lane * w) + '%;width:calc(' + w + '% - 3px);' + b.style + '"><span class="tm">' + esc(o.data.start) + '</span><span class="tt">' + esc(o.data.title) + '</span>' + (ht > 44 && o.data.place ? '<span class="pl">' + esc(o.data.place) + '</span>' : '') + '</button>';
+    });
+    if (d === td && now >= lo && now <= hi) h += '<i class="nowline" style="top:' + ((now - lo) / 60 * PX) + 'px"></i>';
+    h += '</div>';
+  });
+  return h + '</div></div>';
+}
 function viewWeek() {
-  var mon = C.monday(ui.date), map = C.byDate(eventsList(), mon, C.add(mon, 6), keepFn(), occView(false)), td = today(), h = '<div class="wgrid">';
-  for (var i = 0; i < 7; i++) {
-    var d = C.add(mon, i), occ = map[d] || [];
+  var mon = C.monday(ui.date), days = [];
+  for (var i = 0; i < 7; i++) days.push(C.add(mon, i));
+  if (wide()) return timeGrid(days);
+  var map = C.byDate(eventsList(), mon, C.add(mon, 6), keepFn(), occView(false)), td = today(), h = '<div class="wgrid">';
+  days.forEach(function (d) {
+    var occ = map[d] || [];
     h += '<div class="dcol' + (d === td ? ' today' : '') + '"><h3><span>' + DOW3[C.dow(d)] + ' ' + (+d.slice(8)) + '</span><button type="button" class="iconbtn" style="width:28px;height:28px" data-act="add" data-date="' + d + '" aria-label="Add an event on ' + esc(niceDate(d)) + '">' + ICON.plus + '</button></h3>' +
       (occ.length ? occ.map(occItem).join('') : '<div class="note">Free</div>') + '</div>';
-  }
+  });
   return h + '</div>';
 }
+function viewDay() { return timeGrid([ui.date]); }
 function viewAgenda() {
   var td = today(), from = ui.date < td ? td : ui.date, to = C.add(from, 59), map = C.byDate(eventsList(), from, to, keepFn(), occView(false)), days = Object.keys(map).sort();
-  if (!days.length) return '<div class="empty">Nothing is planned in the next sixty days.</div>';
+  if (!days.length) return '<div class="empty">Nothing is planned in the next sixty days.<div class="actions" style="justify-content:center;margin-top:12px"><button type="button" class="btn primary" data-act="add">Add an event</button><button type="button" class="btn" data-act="open-import">Import a file</button></div></div>';
   return '<div class="agenda">' + days.map(function (d) {
     return '<section><h3>' + esc(relDay(d, td) === 'Today' || relDay(d, td) === 'Tomorrow' ? relDay(d, td) + ', ' + (+d.slice(8)) + ' ' + MONTHS[+d.slice(5, 7) - 1] : niceDate(d)) + '</h3><div class="list">' + map[d].map(occItem).join('') + '</div></section>';
   }).join('') + '</div>';
+}
+/* the selected day, beside the calendar on a large screen and under it on a phone */
+function dayPanel() {
+  var date = ui.date, td = today(), n = C.diff(td, date), occ = C.byDate(eventsList(), date, date, keepFn(), occView(false))[date] || [];
+  var rel = n === 0 ? '<span class="pill acc">Today</span>' : n === 1 ? '<span class="pill">Tomorrow</span>' : n === -1 ? '<span class="pill">Yesterday</span>' : '';
+  return '<section class="card dp" id="daypanel" aria-label="Selected day"><div class="dayhead"><h3>' + esc(niceDate(date)) + '</h3>' + rel + '<span class="pill">' + occ.length + (occ.length === 1 ? ' event' : ' events') + '</span></div>' +
+    (occ.length ? '<div class="stack" style="gap:8px">' + occ.map(occItem).join('') + '</div>' : '<p class="note">Nothing is planned on this day.</p>') +
+    '<div class="actions" style="margin-top:12px"><button type="button" class="btn primary" data-act="add" data-date="' + date + '">Add an event</button>' + (S.device.view !== 'day' ? '<button type="button" class="btn" data-act="go-day" data-date="' + date + '">Open this day</button>' : '') + '</div></section>';
 }
 function periodLabel() {
   var v = S.device.view;
   if (v === 'month') return MONTHS[+ui.date.slice(5, 7) - 1] + ' ' + ui.date.slice(0, 4);
   if (v === 'week') { var m = C.monday(ui.date), e = C.add(m, 6); return (+m.slice(8)) + ' ' + MONTHS[+m.slice(5, 7) - 1] + ' to ' + (+e.slice(8)) + ' ' + MONTHS[+e.slice(5, 7) - 1]; }
-  if (v === 'agenda') return 'Coming up';
+  if (v === 'day') return niceDate(ui.date);
   return '';
 }
 function viewWelcome() {
@@ -388,22 +464,39 @@ function joinCard() {
 /* ---------- main render ---------- */
 function render() {
   var app = $('#app'), rm = activeRoom();
-  if (!rm) { app.innerHTML = viewWelcome(); document.title = 'Tandem'; return; }
+  if (!rm) { app.innerHTML = (T.banner ? T.banner() : '') + viewWelcome(); document.title = 'Tandem'; return; }
   var d = R(rm.id), v = S.device.view, name = d.meta.name || 'Calendar';
+  if (['home', 'month', 'week', 'day', 'agenda'].indexOf(v) < 0) v = S.device.view = 'home';
+  var cal = isCalView(v), tab = cal ? 'calendar' : v;
   document.title = name + ' | Tandem';
-  var h = '<div class="top"><button type="button" class="room" data-act="rooms"><span class="rn">' + esc(name) + '</span>' + ICON.down + '</button><div class="spacer"></div><span class="status" id="status" role="status" aria-live="polite">' + esc(ui.status) + '</span>' +
-    '<button type="button" class="iconbtn" data-act="search" aria-label="Search events">' + ICON.search + '</button><button type="button" class="iconbtn" data-act="settings" aria-label="Settings">' + ICON.sliders + '</button></div>';
-  h += '<div class="controls"><div class="seg" role="group" aria-label="View">' + [['home', 'Home'], ['month', 'Month'], ['week', 'Week'], ['agenda', 'Agenda']].map(function (x) {
-    return '<button type="button" data-act="view" data-v="' + x[0] + '" aria-pressed="' + (v === x[0]) + '">' + x[1] + '</button>';
-  }).join('') + '</div>';
-  if (v !== 'home' && v !== 'agenda') {
-    h += '<div class="navgrp"><button type="button" class="iconbtn" data-act="prev" aria-label="Earlier">' + ICON.left + '</button><button type="button" class="btn sm" data-act="today">Today</button><button type="button" class="iconbtn" data-act="next" aria-label="Later">' + ICON.right + '</button><span class="period">' + esc(periodLabel()) + '</span></div>';
+  var tabs = [['home', 'Home', ICON.home], ['calendar', 'Calendar', ICON.cal], ['agenda', 'Agenda', ICON.list]];
+  var h = '<header class="top"><button type="button" class="room" data-act="rooms" aria-label="Switch calendar, current calendar ' + esc(name) + '"><img class="mark" src="icons/favicon-32.png" alt=""><span class="rn">' + esc(name) + '</span>' + ICON.down + '</button>' +
+    '<nav class="tabs" aria-label="Main">' + tabs.map(function (x) { return '<button type="button" class="tab" data-act="view" data-v="' + x[0] + '"' + (tab === x[0] ? ' aria-current="page"' : '') + '>' + x[1] + '</button>'; }).join('') + '</nav>' +
+    '<div class="spacer"></div><span class="status" id="status" role="status" aria-live="polite">' + esc(ui.status) + '</span>' +
+    (T.installButton ? T.installButton() : '') +
+    '<button type="button" class="iconbtn" data-act="search" aria-label="Search events">' + ICON.search + '</button>' +
+    '<button type="button" class="btn primary addbtn" data-act="menu-add">' + ICON.plus + 'Add</button>' +
+    '<button type="button" class="iconbtn" data-act="settings" aria-label="Settings">' + ICON.sliders + '</button></header>';
+  h += T.banner ? T.banner() : '';
+  if (cal) {
+    h += '<div class="controls"><div class="seg" role="group" aria-label="Calendar view">' + [['month', 'Month'], ['week', 'Week'], ['day', 'Day']].map(function (x) {
+      return '<button type="button" data-act="view" data-v="' + x[0] + '" aria-pressed="' + (v === x[0]) + '">' + x[1] + '</button>';
+    }).join('') + '</div><div class="navgrp"><button type="button" class="iconbtn" data-act="prev" aria-label="Earlier">' + ICON.left + '</button><button type="button" class="btn sm" data-act="today">Today</button><button type="button" class="iconbtn" data-act="next" aria-label="Later">' + ICON.right + '</button></div><span class="period">' + esc(periodLabel()) + '</span></div>';
   }
-  h += '<div class="spacer"></div><button type="button" class="btn" data-act="open-import">Import a file</button><button type="button" class="btn" data-act="open-ticket">Add a ticket</button><button type="button" class="btn primary addbtn" data-act="add">Add event</button></div>';
   h += peopleBar() + filterBar();
   if (rm.invalid) h += '<div class="empty">This calendar link is no longer valid. It may have been replaced. Ask for the new invitation link and open it on this device, or remove the calendar in Settings.</div>';
-  h += v === 'home' ? viewHome() : v === 'month' ? viewMonth() : v === 'week' ? viewWeek() : viewAgenda();
-  h += '<button type="button" class="fab" data-act="add">' + ICON.plus + 'Add event</button>';
+  if (v === 'home') h += viewHome();
+  else if (v === 'agenda') h += viewAgenda();
+  else {
+    var panel = v === 'month' || (v === 'week' && wide());
+    h += '<div class="layout' + (panel ? '' : ' solo') + '"><div class="main">' + (v === 'month' ? viewMonth() : v === 'week' ? viewWeek() : viewDay()) + '</div>' +
+      (panel ? '<aside class="aside">' + dayPanel() + (T.quickCard ? T.quickCard() : '') + '</aside>' : '') + '</div>';
+  }
+  h += '<nav class="bottomnav" aria-label="Main">' +
+    [['home', 'Home', ICON.home], ['calendar', 'Calendar', ICON.cal]].map(function (x) { return '<button type="button" data-act="view" data-v="' + x[0] + '"' + (tab === x[0] ? ' aria-current="page"' : '') + '>' + x[2] + '<span>' + x[1] + '</span></button>'; }).join('') +
+    '<button type="button" class="bn-add" data-act="menu-add" aria-label="Add">' + ICON.plus + '</button>' +
+    '<button type="button" data-act="view" data-v="agenda"' + (tab === 'agenda' ? ' aria-current="page"' : '') + '>' + ICON.list + '<span>Agenda</span></button>' +
+    '<button type="button" data-act="menu-more">' + ICON.more + '<span>More</span></button></nav>';
   var y = window.scrollY;
   app.innerHTML = h;
   window.scrollTo(0, y);
@@ -416,20 +509,14 @@ function openDialog(html) {
 }
 function closeDialog() { var dlg = $('#dlg'); if (dlg.open) { if (dlg.close) dlg.close(); else dlg.removeAttribute('open'); } }
 
-function openDay(date) {
-  var map = C.byDate(eventsList(), date, date, keepFn(), occView(false)), occ = map[date] || [];
-  openDialog('<div class="actions"><h2>' + esc(niceDate(date)) + '</h2><span class="spacer"></span><button type="button" class="btn sm" data-act="close">Close</button></div>' +
-    (occ.length ? '<div class="stack">' + occ.map(occItem).join('') + '</div>' : '<p class="note">Nothing is planned on this day.</p>') +
-    '<button type="button" class="btn primary" data-act="add" data-date="' + date + '">Add an event</button>');
-}
 function whoChips(selected) {
   return '<div class="whochips" id="ev-who">' + members().map(function (m) {
     return '<button type="button" data-act="toggle-who" data-id="' + esc(m.id) + '" aria-pressed="' + (selected.indexOf(m.id) >= 0) + '"><span class="dot" style="--c:' + m.colour + '"></span>' + esc(m.name) + '</button>';
   }).join('') + '</div><div class="note">Choose nobody to show it as an event for everyone.</div>';
 }
-function openEvent(id, date) {
+function openEvent(id, date, start, end) {
   var rm = activeRoom(); if (!rm) return;
-  var ex = id ? R(rm.id).events[id] : null, d = ex ? ex.data : { date: date || ui.date, allDay: false, start: '09:00', end: '10:00', who: [rm.me], repeat: 'none' };
+  var ex = id ? R(rm.id).events[id] : null, d = ex ? ex.data : { date: date || ui.date, allDay: false, start: start || '09:00', end: end || (start ? fmtMin((hmMin(start) || 0) + 60) : '10:00'), who: [rm.me], repeat: 'none' };
   var rep = d.repeat || 'none';
   openDialog('<form id="evform" data-id="' + esc(id || '') + '"><div class="stack">' +
     '<h2>' + (id ? 'Edit event' : 'New event') + '</h2>' +
@@ -623,15 +710,31 @@ document.addEventListener('click', function (e) {
   if (a === 'close') closeDialog();
   else if (a === 'rooms') openRooms();
   else if (a === 'settings') openSettings();
-  else if (a === 'view') { S.device.view = t.dataset.v; ui.date = today(); save(); render(); }
+  else if (a === 'view') {
+    var nv = t.dataset.v; if (nv === 'calendar') nv = calView();
+    if (isCalView(nv)) S.device.cal = nv;
+    if (nv === 'home') ui.date = today();
+    S.device.view = nv; save(); render(); window.scrollTo(0, 0);
+  }
   else if (a === 'prev' || a === 'next') {
-    var n = a === 'next' ? 1 : -1;
-    ui.date = S.device.view === 'week' ? C.add(ui.date, 7 * n) : C.addMonths(C.monthStart(ui.date), n);
+    var n = a === 'next' ? 1 : -1, v0 = S.device.view;
+    if (v0 === 'week') ui.date = C.add(ui.date, 7 * n);
+    else if (v0 === 'day') ui.date = C.add(ui.date, n);
+    else { var m0 = C.addMonths(C.monthStart(ui.date), n); ui.date = m0.slice(0, 7) === today().slice(0, 7) ? today() : m0; }
     render();
   }
   else if (a === 'today') { ui.date = today(); render(); }
-  else if (a === 'day') openDay(t.dataset.date);
-  else if (a === 'add') { closeDialog(); openEvent(null, t.dataset.date || (S.device.view === 'month' || S.device.view === 'week' ? null : today())); }
+  else if (a === 'day') {
+    ui.date = t.dataset.date; render();
+    if (!wide() && S.device.view === 'month') { var dp = $('#daypanel'); if (dp && dp.scrollIntoView) dp.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+  }
+  else if (a === 'go-day') { ui.date = t.dataset.date; S.device.cal = 'day'; S.device.view = 'day'; save(); render(); window.scrollTo(0, 0); }
+  else if (a === 'slot') {
+    var box = t.getBoundingClientRect(), mins = Math.floor(((e.clientY - box.top) / PX * 60 + (+t.dataset.lo)) / 30) * 30;
+    closeDialog(); openEvent(null, t.dataset.date, fmtMin(mins), fmtMin(mins + 60));
+  }
+  else if (a === 'add') { closeDialog(); openEvent(null, t.dataset.date || (isCalView(S.device.view) ? ui.date : today())); }
+  else if (a === 'reload-app') location.reload();
   else if (a === 'event') { closeDialog(); if (T.openSheet) T.openSheet(t.dataset.id, t.dataset.date); else if (String(t.dataset.id).indexOf('ov:') === 0) openOverlayEvent(t.dataset.id, t.dataset.date); else openEvent(t.dataset.id, t.dataset.date); }
   else if (a === 'edit-event') { closeDialog(); openEvent(t.dataset.id, t.dataset.date); }
   else if (a === 'toggle-optional') { S.device.hideOptional = !S.device.hideOptional; save(); render(); }
@@ -738,7 +841,18 @@ document.addEventListener('submit', function (e) {
   }
 });
 
-window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); ui.deferredInstall = e; });
+window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); ui.deferredInstall = e; if (S.active) render(); });
+window.addEventListener('appinstalled', function () { ui.deferredInstall = null; if (S.active) render(); });
+var wasWide = wide(), resizeTimer = null;
+window.addEventListener('resize', function () {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function () { var w = wide(); if (w !== wasWide) { wasWide = w; if (S.active && !$('dialog[open]')) render(); } }, 150);
+});
+/* when a new version of the application has been installed in the background, offer to load it */
+if ('serviceWorker' in navigator) {
+  var hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', function () { if (hadController) { ui.update = true; render(); } hadController = true; });
+}
 document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && S.active) syncRoom(S.active); });
 window.addEventListener('online', function () { if (S.active) syncRoom(S.active); });
 window.addEventListener('offline', function () { setStatus('Offline. Changes are kept on this device.'); });
@@ -751,14 +865,15 @@ T.openDialog = openDialog; T.closeDialog = closeDialog; T.activeRoom = activeRoo
 T.niceDate = niceDate; T.dayName = dayName; T.today = today; T.ui = ui; T.setStatus = setStatus; T.syncRoom = syncRoom; T.scheduleSync = scheduleSync;
 T.openSettings = openSettings; T.openEvent = openEvent; T.openOverlayEvent = openOverlayEvent; T.createCard = createCard; T.joinCard = joinCard; T.colourPicker = colourPicker;
 T.joinWithKey = joinWithKey; T.createRoom = createRoom; T.ruleList = ruleList; T.occView = occView; T.keepFn = keepFn; T.relDay = relDay; T.DOW = DOW; T.MONTHS = MONTHS; T.DOW3 = DOW3;
-T.nowHM = nowHM; T.parseKey = parseKey; T.afterJoin = afterJoin; T.openRooms = openRooms; T.openNewOrJoin = openNewOrJoin;
+T.nowHM = nowHM; T.ICON = ICON; T.wide = wide; T.parseKey = parseKey; T.afterJoin = afterJoin; T.openRooms = openRooms; T.openNewOrJoin = openNewOrJoin;
 if (window.TandemFeatures) window.TandemFeatures(T);
+if (window.TandemShell) window.TandemShell(T);
 
 /* ---------- start ---------- */
 function start() {
   var q = new URLSearchParams(location.search);
   if (T.start && T.start()) return;
-  if (q.get('view') && ['home', 'month', 'week', 'agenda'].indexOf(q.get('view')) >= 0) S.device.view = q.get('view');
+  if (q.get('view') && ['home', 'month', 'week', 'day', 'agenda'].indexOf(q.get('view')) >= 0) { S.device.view = q.get('view'); if (isCalView(q.get('view'))) S.device.cal = q.get('view'); }
   if (S.active && !activeRoom()) S.active = S.rooms[0] ? S.rooms[0].id : null;
   if (!S.active && S.rooms.length) S.active = S.rooms[0].id;
   render();
