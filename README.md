@@ -18,6 +18,7 @@ Open the application: https://danfrmdacaf.github.io/tandem/
 - **Importing a timetable or a list.** A CSV file, an Excel sheet (.xlsx), a PDF or a calendar file (.ics) can be added to a calendar. Tandem works out which column is which, or reads a weekly grid with weekdays across the top and times down the side, and shows what it found before anything is added. A timetable that gives only weekdays repeats every week between two dates. Choosing the same file again updates the events instead of duplicating them, and a whole import can be taken back in one step.
 - **Optional and hidden events.** Choose any event and mark it as optional, or choose not to show it. A rule can cover one day, every repeat of an event, every event with the same title, or every event that starts at or after a time, for example the sessions after 1 pm each day. Optional events are shown softly and are left out of free time and countdowns. These rules change only what the person sees. Nobody else is told, and the event is not changed.
 - **Travel tickets.** Choose a ticket that has been downloaded, as a PDF, an Apple Wallet pass or a calendar file, or paste the text of a booking email. Tandem reads the date, the times, the route, the booking reference and the seat, shows them for checking, and adds the journey to the calendar. The ticket file is kept with the event, so it can be downloaded again later, and a copy is kept on the device so it works without a signal. A ticket that is a picture is kept, and the times are typed in.
+- **Reminders.** A notification a chosen number of minutes before a timed event starts (5, 10, 15, 30 or 60), on an iPhone, an iPad, a Mac or any computer, even when Tandem is closed. Each device is switched on separately in Settings. Events marked optional or hidden, and all day events, never send one. See the section on reminders below.
 - **Search and export.** Search across titles, places, notes and booking references, and download any calendar as a file that opens in any calendar application.
 - **Works without a connection.** Every calendar is kept on the device. Changes made offline are sent when the connection returns.
 - **Calendar subscription.** A read only address that can be added to the Calendar application on an iPhone, an iPad, a Mac or an Android phone. See the section on widgets below.
@@ -51,6 +52,16 @@ An account is optional. Without one, a person uses an invitation link and the ca
 - **Sessions.** Signing in gives the device a random token. Only a hash of that token is stored. A token lasts ninety days of use, and changing the password or resetting it signs out every other device.
 - **Forgotten passwords.** A reset link is sent by email. It works once and expires after one hour. Only a hash of the link is stored.
 - **What the server can see.** The keys of the calendars in an account are held in the account so that a new device can open them. They sit in the database, which only the server function can reach, and they are never returned to anyone except the signed in account. The events in a calendar are held in the same database as before.
+
+## Reminders
+
+Reminders use web push, the standard that lets a website send a notification when it is not open.
+
+- **On an iPhone or an iPad** Tandem has to be on the Home Screen first (Share, then Add to Home Screen), and the device needs iOS or iPadOS 16.4 or newer. Open Tandem from the Home Screen, then switch reminders on in Settings and allow notifications when asked.
+- **On a Mac or another computer** switch reminders on in Settings in Safari, Chrome, Edge or Firefox and allow notifications. The browser has to be running, but the Tandem page does not have to be open.
+- **How it works.** A second edge function, `tandem-push`, stores each device that asked for reminders together with its time zone, the calendars it belongs to and its personal rules. Once a minute the database scheduler (pg_cron with pg_net) calls it. It finds the events that start within the chosen number of minutes, skips the ones the person has silenced, and sends an encrypted push message to the device. Each reminder is recorded, so nobody is told twice. The messages are encrypted for the device with the standard Web Push scheme and signed with a VAPID key, written with the Web Crypto interface so it runs in the edge runtime and in the tests.
+- **Private by design.** The signing key and the scheduler secret sit in the `tandem_config` table, which only the server can read. The only part in this repository is the public half of the key. The server accepts push addresses only from the push services of Apple, Google, Mozilla and Microsoft.
+- **Time zones.** Events are written as wall clock times, so each device tells the server its own time zone, and a reminder is worked out in that zone.
 
 ## Setting up the email that sends reset links
 
@@ -86,8 +97,8 @@ A website cannot place a widget on the home screen of an iPhone, an iPad or an A
 The application is a set of plain files with no build step. The storage is a small Supabase project.
 
 1. Create a Supabase project.
-2. Apply the database migrations in `supabase/migrations/`, in order. The third one adds the optional accounts.
-3. Deploy the function in `supabase/functions/tandem/` with the option that requires a signed in user switched off. The function reads its database credentials from the environment that the platform provides.
+2. Apply the database migrations in `supabase/migrations/`, in order. The third one adds the optional accounts and the fourth adds reminders.
+3. Deploy the functions in `supabase/functions/tandem/` and `supabase/functions/tandem-push/` with the option that requires a signed in user switched off. For reminders, generate a VAPID key pair (ECDSA, P-256), store the private key as JSON and a random shared secret in `tandem_config` under `vapid_private` and `tick_secret`, store the public key under `vapid_public`, and put the same public key in `config.js`. The function reads its database credentials from the environment that the platform provides.
 4. Put the address of the deployed function in `config.js`.
 5. Publish the files in this folder with any static host. GitHub Pages works well.
 
@@ -99,7 +110,7 @@ To keep a free Supabase project from pausing after a week without use, `.github/
 npm test
 ```
 
-The tests cover repeating events, events that span several days, free time detection, the checking of event input, the reading and writing of calendar files, the personal hide and optional rules, and the reading of CSV, Excel and PDF timetables and of travel tickets (including a PDF, an Apple Wallet pass and several booking layouts).
+The tests cover repeating events, events that span several days, free time detection, the checking of event input, the reading and writing of calendar files, the personal hide and optional rules, and the reading of CSV, Excel and PDF timetables and of travel tickets (including a PDF, an Apple Wallet pass and several booking layouts). The reminder tests check which events are due in different time zones, that the message encryption can be read back by a receiver written from the specification, that the VAPID signature verifies, and that the server copy of the calendar logic agrees with the application on hundreds of generated events.
 
 ## Third party code
 

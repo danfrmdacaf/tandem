@@ -1,6 +1,6 @@
 /* Tandem service worker. It keeps the application available without a connection. Calendar data is
    stored on the device by the application itself and is never cached here. */
-const CACHE = 'tandem-v3';
+const CACHE = 'tandem-v4';
 const ASSETS = ['./', 'index.html', 'styles.css', 'core.js', 'importer.js', 'features.js', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
@@ -25,5 +25,23 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(caches.match(req).then((hit) => {
     const net = fetch(req).then((res) => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); } return res; }).catch(() => hit);
     return hit || net;
+  }));
+});
+
+/* Reminders. The server sends a short message shortly before an event starts and this shows it. */
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) { d = { body: e.data ? e.data.text() : '' }; }
+  const base = self.registration.scope;
+  e.waitUntil(self.registration.showNotification(d.title || 'Tandem', {
+    body: d.body || '', tag: d.tag || undefined, icon: base + 'icons/icon-192.png', badge: base + 'icons/favicon-32.png', data: { url: d.url || './' }
+  }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const target = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    for (const c of list) if ('focus' in c) return c.focus();
+    return self.clients.openWindow(target);
   }));
 });

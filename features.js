@@ -261,7 +261,7 @@ T.hooks.click.push(function (a, t) {
   if (a === 'signout-do') {
     t.disabled = true;
     var tok = S.account && S.account.token;
-    (T.acctSync() || Promise.resolve()).then(function () { return api('/auth/logout', { token: tok }).catch(function () {}); }).then(function () { signOutLocal(); T.closeDialog(); T.render(); });
+    (T.acctSync() || Promise.resolve()).then(function () { return disablePush(); }).then(function () { return api('/auth/logout', { token: tok }).catch(function () {}); }).then(function () { signOutLocal(); T.closeDialog(); T.render(); });
     return true;
   }
   return false;
@@ -727,5 +727,106 @@ T.hooks.click.push(function (a) {
   return false;
 });
 document.addEventListener('input', function (e) { if (e.target && e.target.id === 'sr-q') runSearch(e.target.value); });
+
+/* =====================================================================
+   Reminders: a notification shortly before an event starts, even when Tandem is closed
+   ===================================================================== */
+var PUSH_API = String((window.TANDEM_CONFIG || {}).api || '').replace(/\/tandem$/, '/tandem-push');
+var VAPID = (window.TANDEM_CONFIG || {}).vapid;
+function pushPost(path, body) {
+  return fetch(PUSH_API + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(function (res) {
+    return res.json().catch(function () { return {}; }).then(function (j) { if (!res.ok) { var e = new Error(j.error || 'That did not work.'); e.status = res.status; throw e; } return j; });
+  });
+}
+function pushSupport() {
+  var ua = navigator.userAgent, ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var standalone = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  return { ios: ios, standalone: standalone, ok: 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window };
+}
+function keyBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return b64ToBytes(s); }
+function pushState() { return S.device.push || { on: false, lead: 10 }; }
+function getSub() { return navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.getSubscription().then(function (sub) { return { reg: reg, sub: sub }; }); }); }
+function pushBody(sub, welcome) {
+  return {
+    sub: sub.toJSON(), tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || 'Europe/London', lead: pushState().lead, welcome: !!welcome,
+    rooms: S.rooms.filter(function (r) { return !r.invalid; }).map(function (r) { return { key: r.key, me: r.me }; }),
+    rules: Object.keys(S.rules).map(function (k) { return S.rules[k]; }).filter(function (r) { return !r.gone; }).map(function (r) { var c = Object.assign({}, r); delete c.label; return c; })
+  };
+}
+var pushTimer = null;
+T.pushSchedule = function (ms) { if (!pushState().on) return; clearTimeout(pushTimer); pushTimer = setTimeout(pushSync, ms == null ? 2500 : ms); };
+function pushSync() {
+  if (!pushState().on || !pushSupport().ok || !S.rooms.length) return Promise.resolve();
+  if (Notification.permission !== 'granted') { S.device.push = { on: false, lead: pushState().lead }; T.save(); return Promise.resolve(); }
+  return getSub().then(function (x) {
+    var p = x.sub ? Promise.resolve(x.sub) : x.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(VAPID) });
+    return p.then(function (sub) { return pushPost('/subscribe', pushBody(sub, false)); });
+  }).catch(function () {});
+}
+function enablePush(lead) {
+  if (!VAPID) return Promise.reject(new Error('Reminders are not set up in this copy of Tandem.'));
+  return Notification.requestPermission().then(function (perm) {
+    if (perm !== 'granted') throw new Error('Notifications are blocked for Tandem. Allow them in the settings of your device or browser, then try again.');
+    return getSub();
+  }).then(function (x) {
+    return (x.sub ? Promise.resolve(x.sub) : x.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(VAPID) }));
+  }).then(function (sub) {
+    S.device.push = { on: true, lead: lead };
+    return pushPost('/subscribe', pushBody(sub, true));
+  }).then(function () { T.save(); });
+}
+function disablePush() {
+  S.device.push = { on: false, lead: pushState().lead }; T.save();
+  if (!pushSupport().ok) return Promise.resolve();
+  return getSub().then(function (x) { if (!x.sub) return; var ep = x.sub.endpoint; return x.sub.unsubscribe().then(function () { return pushPost('/unsubscribe', { endpoint: ep }); }); }).catch(function () {});
+}
+var baseSchedule = T.acctSchedule;
+T.acctSchedule = function (ms) { T.pushSchedule(); return baseSchedule(ms); };
+setTimeout(pushSync, 4000);
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') T.pushSchedule(1500); });
+
+function remindersSection() {
+  var sp = pushSupport(), st = pushState(), lead = st.lead || 10, h = '<div class="sect"><h3>Reminders</h3>';
+  if (!sp.ok || (sp.ios && !sp.standalone)) {
+    h += '<p class="note">Tandem can send a notification shortly before an event starts, even when it is closed. ' + (sp.ios ? 'On an iPhone or an iPad this only works once Tandem is on the Home Screen: open Tandem in Safari, tap the Share button, choose Add to Home Screen, then open Tandem from the Home Screen and come back to this page. It needs iOS or iPadOS 16.4 or newer.' : 'This browser does not support notifications. Please use a recent version of Safari, Chrome, Edge or Firefox.') + '</p></div>';
+    return h;
+  }
+  var opts = [5, 10, 15, 30, 60].map(function (n) { return '<option value="' + n + '"' + (lead === n ? ' selected' : '') + '>' + n + ' minutes before</option>'; }).join('');
+  if (st.on) {
+    h += '<p class="note">Reminders are <strong>on for this device</strong>. Each device is switched on separately, so do the same on your phone, tablet and computer.</p>' +
+      '<label class="f">Tell me<select data-push-lead>' + opts + '</select></label>' +
+      '<div class="actions"><button type="button" class="btn" data-act="push-test">Send a test reminder</button><button type="button" class="btn" data-act="push-off">Turn off</button></div>';
+  } else {
+    h += '<p class="note">Get a notification shortly before an event starts, on this device, even when Tandem is closed.</p>' +
+      '<label class="f">Tell me<select data-push-lead>' + opts + '</select></label>' +
+      '<div class="actions"><button type="button" class="btn primary" data-act="push-on">Turn on reminders</button></div>';
+  }
+  h += '<div class="note" id="push-msg" role="status"></div>' +
+    '<p class="note">Reminders are for timed events in your calendars that are for you or for everyone. Events you have marked as optional or hidden, and all day events, never send one. Your device tells Tandem which calendars to watch, so removing a calendar or replacing its link stops its reminders.</p></div>';
+  return h;
+}
+T.sections.top.push(remindersSection);
+T.hooks.click.push(function (a, t) {
+  var msg = $('#push-msg');
+  if (a === 'push-on') {
+    var sel = $('[data-push-lead]'), lead = sel ? +sel.value : 10; t.disabled = true;
+    if (msg) msg.textContent = 'Please allow notifications when your device asks.';
+    enablePush(lead).then(function () { ui.flash = 'Reminders are on for this device. A confirmation notification is on its way.'; T.openSettings(); })
+      .catch(function (e) { t.disabled = false; if (msg) msg.textContent = e.message || 'Reminders could not be switched on.'; });
+    return true;
+  }
+  if (a === 'push-off') { disablePush().then(function () { ui.flash = 'Reminders are off for this device.'; T.openSettings(); }); return true; }
+  if (a === 'push-test') {
+    getSub().then(function (x) { if (!x.sub) throw new Error('This device is not signed up for reminders yet.'); if (msg) msg.textContent = 'Sending'; return pushPost('/test', { endpoint: x.sub.endpoint }); })
+      .then(function (r) { if (msg) msg.textContent = r.ok ? 'Sent. It should arrive within a few seconds.' : 'The notification service did not accept it (' + r.status + '). Try turning reminders off and on again.'; })
+      .catch(function (e) { if (msg) msg.textContent = e.message || 'The test could not be sent.'; });
+    return true;
+  }
+  return false;
+});
+T.hooks.change.push(function (el) {
+  if (el.dataset && el.dataset.pushLead !== undefined) { var st = pushState(); S.device.push = { on: st.on, lead: +el.value }; T.save(); if (st.on) pushSync(); return true; }
+  return false;
+});
 };
 })();
